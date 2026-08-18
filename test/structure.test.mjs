@@ -131,6 +131,9 @@ describe("standalone product", () => {
     assert.match(ui, /记忆隔离/);
     assert.match(ui, /仅项目内记忆/);
     assert.match(ui, /顶栏多一个「分享」/);
+    assert.match(ui, /复制粘贴/);
+    assert.match(ui, /顶栏格子/);
+    assert.match(ui, /Cmd\/Ctrl\+V/);
     const css = readFileSync(resolve(root, "gateway/web/app.css"), "utf8");
     assert.match(css, /grid-template-columns: minmax\(148px, 200px\) minmax\(0, 1fr\) 92px/);
     assert.match(css, /\.person-actions/);
