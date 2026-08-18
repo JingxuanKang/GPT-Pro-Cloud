@@ -80,13 +80,15 @@ Members are managed on the **Team** page, which only the administrator sees.
 | Add a member | Invite them, then assign which accounts they may open |
 | Rotate a credential | Reset that member's password; their sessions are revoked |
 | Remove access | Disable or delete the member; live sessions drop immediately |
-| See who is using what | Machine cards show live presence per account |
+| See who is using what | Machine cards show live presence per account; Team lists occupancy as information |
+| Disconnect a live seat | On a live account card, **断开** revokes that member's login and drops the desktop; they sign in again. The member stays |
+| Delete an extra account | On a panel-created card, **删除** stops the container and wipes `./data/<id>` so a re-add is clean. Built-in `a` / `b` stay |
 
 Passwords are stored as per-user salted scrypt hashes. Sign-in is rate limited per `ip|username` (10 attempts per 15 minutes), and sessions survive a restart.
 
 ## Clipboard
 
-The clipboard is two-way and uses the shortcuts you already know — copy on your laptop, paste into the remote Chromium, and back. Text and screenshots both work.
+The clipboard is two-way between your machine and the desk. Text and screenshots both work.
 
 ## Sharing and memory isolation
 

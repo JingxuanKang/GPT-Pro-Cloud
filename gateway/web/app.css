@@ -359,6 +359,19 @@ button { cursor: pointer; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.m-kick {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  padding: 0;
+  margin-left: 2px;
+  font-size: 12px;
+  font-weight: 550;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+.m-kick:hover { color: var(--danger); }
 .m-go {
   margin-left: auto;
   display: inline-flex;
@@ -446,6 +459,23 @@ button { cursor: pointer; }
 .switch-row input:checked { background: var(--green); }
 .switch-row input:checked::after { transform: translateX(17px); }
 .switch-row input:disabled { opacity: 0.45; }
+.assist-note {
+  padding: 0 20px 18px;
+  border-top: 1px solid var(--line);
+}
+.assist-note > b {
+  display: block;
+  margin-top: 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.assist-note p {
+  margin: 8px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.assist-note p b { color: var(--ink); font-weight: 600; }
 .people { display: flex; flex-direction: column; }
 .person {
   display: grid;
@@ -500,6 +530,11 @@ button { cursor: pointer; }
   font-weight: 500;
   color: var(--ink-2);
   white-space: nowrap;
+}
+.chip.live {
+  color: var(--green);
+  border-color: rgba(23, 143, 95, 0.28);
+  background: rgba(23, 143, 95, 0.07);
 }
 button.chip {
   appearance: none;

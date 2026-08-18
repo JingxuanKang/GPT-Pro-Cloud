@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createUserStore } from "../lib/users.mjs";
 import { parseInstances } from "../lib/instances.mjs";
-import { createDeskRegistry, nextDeskId, provisionDesk, MAX_DESKS } from "../lib/desks.mjs";
+import { createDeskRegistry, nextDeskId, provisionDesk, retireDesk, MAX_DESKS } from "../lib/desks.mjs";
 
 describe("desk ids", () => {
   it("allocates the next letter after a and b", () => {
@@ -29,6 +29,10 @@ describe("desk registry", () => {
     assert.equal(registry.has("c"), true);
     assert.equal(registry.get("a").target, "http://desktop-a:3000");
     assert.equal(registry.add("c"), c);
+    assert.equal(registry.remove("c"), true);
+    assert.equal(registry.has("c"), false);
+    assert.deepEqual(registry.ids(), ["a", "b"]);
+    assert.equal(registry.remove("c"), false);
   });
 });
 
@@ -109,5 +113,61 @@ describe("provisionDesk", () => {
       /最多 2/,
     );
     assert.equal(MAX_DESKS, 24);
+  });
+});
+
+describe("retireDesk", () => {
+  function store() {
+    const dir = mkdtempSync(join(tmpdir(), "gpc-retire-"));
+    return createUserStore({
+      file: join(dir, "users.json"),
+      adminUser: "admin",
+      adminPassword: "admin-secret",
+      deskIds: ["a", "b"],
+    });
+  }
+
+  it("removes an extra desk after teardown and refuses seed seats", async () => {
+    const users = store();
+    const registry = createDeskRegistry(parseInstances("a,b"));
+    await provisionDesk({ users, registry, name: "测试号", ensure: async () => {} });
+    const removed = [];
+    const out = await retireDesk({
+      users,
+      registry,
+      id: "c",
+      remove: async (id) => {
+        removed.push(id);
+      },
+    });
+    assert.deepEqual(out, { id: "c" });
+    assert.deepEqual(removed, ["c"]);
+    assert.equal(registry.has("c"), false);
+    assert.deepEqual(users.extraDeskIds(), []);
+    assert.deepEqual(users.listDeskIds(), ["a", "b"]);
+    await assert.rejects(() => retireDesk({ users, registry, id: "a", remove: async () => {} }), /内置/);
+    await assert.rejects(() => retireDesk({ users, registry, id: "ghost", remove: async () => {} }), /不存在/);
+  });
+
+  it("keeps the card if teardown fails", async () => {
+    const users = store();
+    const registry = createDeskRegistry(parseInstances("a,b"));
+    await provisionDesk({ users, registry, name: "测试号", ensure: async () => {} });
+    await assert.rejects(
+      () =>
+        retireDesk({
+          users,
+          registry,
+          id: "c",
+          remove: async () => {
+            const e = new Error("容器还在");
+            e.status = 502;
+            throw e;
+          },
+        }),
+      /容器还在/,
+    );
+    assert.equal(registry.has("c"), true);
+    assert.deepEqual(users.extraDeskIds(), ["c"]);
   });
 });

@@ -10,7 +10,14 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "出了点问题，请再试一次");
+  if (!res.ok) {
+    if (res.status === 401 && state.me && path !== "/api/login" && path !== "/api/setup") {
+      state.me = null;
+      state.boot = false;
+      setHash("/login");
+    }
+    throw new Error(data.error || "出了点问题，请再试一次");
+  }
   return data;
 }
 
@@ -40,6 +47,19 @@ function setHash(path) {
 
 function people(id) {
   return state.presence[id] || [];
+}
+
+function occupancy(user) {
+  if (!user) return [];
+  const ids = [];
+  for (const [deskId, vs] of Object.entries(state.presence || {})) {
+    if ((vs || []).some((v) => v.id === user.id || v.username === user.username)) ids.push(deskId);
+  }
+  return ids;
+}
+
+function kickBtn(id, name) {
+  return `<button type="button" class="m-kick" data-kick="${esc(id)}" data-kick-name="${esc(name)}">断开</button>`;
 }
 
 function deskName(id) {
@@ -166,11 +186,20 @@ function renderHome() {
         .map((v) => av(v.username, "av mini"))
         .join("");
       const names = vs.map((v) => v.username).join("、");
+      const kicks = isAdmin
+        ? vs
+            .filter((v) => v.id && v.id !== state.me?.id)
+            .map((v) => kickBtn(v.id, v.username))
+            .join("")
+        : "";
       const users = live
-        ? `<span class="m-users"><span class="stack">${stack}</span><span>${esc(names)}</span></span>`
+        ? `<span class="m-users"><span class="stack">${stack}</span><span>${esc(names)}</span>${kicks}</span>`
         : `<span class="m-users"><span>无人使用</span></span>`;
       const pencil = isAdmin
         ? `<button type="button" class="m-rename" data-rename="${esc(d.id)}" aria-label="重命名">${ICO.pencil}</button>`
+        : "";
+      const del = isAdmin && d.extra
+        ? `<button type="button" class="m-kick" data-delete="${esc(d.id)}" data-delete-name="${esc(d.name)}" data-delete-live="${live ? "1" : ""}">删除</button>`
         : "";
       return `<div class="machine" data-open="${esc(d.id)}" role="button" tabindex="0">
         <span class="m-body">
@@ -182,6 +211,7 @@ function renderHome() {
         </span>
         <span class="m-foot">
           ${users}
+          ${del}
           <span class="m-go">进入${ICO.arrow}</span>
         </span>
       </div>`;
@@ -239,15 +269,20 @@ function renderAdmin() {
   const rows = state.users
     .map((u) => {
       const chips = (u.desks || []).map((id) => `<span class="chip">${esc(deskName(id))}</span>`).join("");
+      const on = occupancy(u);
+      const liveChip = on.length
+        ? `<span class="chip live">${esc(on.map(deskName).join("、"))} · 使用中</span>`
+        : "";
       const actions =
         u.role === "admin"
           ? ""
           : `<button type="button" class="text-btn" data-manage="${esc(u.id)}">管理</button>
              <button type="button" class="text-btn danger" data-del="${esc(u.id)}" data-name="${esc(u.username)}">移除</button>`;
       const role = u.role === "admin" ? "管理员" : "成员";
+      const where = on.length ? ` · 正在使用 ${esc(on.map(deskName).join("、"))}` : "";
       return `<article class="person ${u.disabled ? "off" : ""}">
-        <div class="person-who">${av(u.username)}<div class="person-id"><b>${esc(u.username)}</b><span>${role}${u.disabled ? ` · <i class="off-note">已停用</i>` : ""}</span></div></div>
-        <div class="access">${chips || `<span class="none">未分配账号</span>`}</div>
+        <div class="person-who">${av(u.username)}<div class="person-id"><b>${esc(u.username)}</b><span>${role}${where}${u.disabled ? ` · <i class="off-note">已停用</i>` : ""}</span></div></div>
+        <div class="access">${liveChip}${chips || (liveChip ? "" : `<span class="none">未分配账号</span>`)}</div>
         <div class="person-actions">${actions}</div>
       </article>`;
     })
@@ -306,7 +341,7 @@ function renderAdmin() {
     <header class="page-head split">
       <div>
         <h1 class="display">团队</h1>
-        <p class="hint">管理谁可以登录，以及能使用哪些 ChatGPT 账号。</p>
+        <p class="hint">管理谁可以登录、能用哪些账号。谁在使用某台桌面，请到首页账号卡片上断开。</p>
       </div>
       <button type="button" class="btn" id="add-user">邀请成员</button>
     </header>
@@ -350,6 +385,18 @@ function renderSettings() {
         </span>
         <input type="checkbox" id="assist-toggle" ${on ? "checked" : ""}>
       </label>
+      <div class="assist-note">
+        <b>说明</b>
+        <p><b>分享</b> — 关掉时，在 ChatGPT 页面里自己点 Share 并复制，链接会经剪贴板落到本机。打开后，顶栏多一个「分享」按钮，由网关代点，链接直接给你。</p>
+        <p><b>记忆隔离</b> — 打开后，成员第一次进入某个账号，会自动进入（或创建）一个以其用户名命名的 ChatGPT 项目，并设为仅项目内记忆。对话不读写账号的全局记忆。</p>
+        <p><b>案例</b> — ada 和 bob 共用「账号A」。ada 第一次打开时进入项目「ada」，对话只写进这个项目、不进账号的全局记忆；bob 进的是「bob」。两人仍在同一个 ChatGPT 账号里，记忆互不影响。</p>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <b>复制粘贴</b>
+        <em>本机和桌面之间的复制粘贴是双向的，平时无需额外操作。</em>
+      </div>
     </section>
     <section class="panel">
       <div class="panel-head">
@@ -621,6 +668,11 @@ function bindDesk() {
     if (state.view !== "desk" || !state.deskId) return;
     try {
       const r = await fetch(`/api/desks/${state.deskId}/peek`, { credentials: "same-origin" });
+      if (r.status === 401 && state.me) {
+        state.me = null;
+        setHash("/login");
+        return;
+      }
       if (!r.ok) return;
       const mime = r.headers.get("content-type") || "";
       if (!mime.startsWith("text/")) return;
@@ -846,11 +898,61 @@ async function openDesk(id) {
   setHash(`/desk/${id}`);
 }
 
+async function onKick(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  const id = btn.getAttribute("data-kick");
+  const name = btn.getAttribute("data-kick-name") || "这位成员";
+  if (!id) return;
+  if (!confirm(`确定断开 ${name} 的会话？对方需要重新登录。`)) return;
+  try {
+    await api(`/api/admin/users/${id}/kick`, { method: "POST" });
+    toast(`已断开 ${name}`);
+    await refresh();
+  } catch (err) {
+    toast(err.message || "未能断开");
+  }
+}
+
+function bindKick() {
+  document.querySelectorAll("[data-kick]").forEach((btn) => {
+    btn.onclick = onKick;
+  });
+}
+
+async function onDeleteDesk(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  const id = btn.getAttribute("data-delete");
+  const name = btn.getAttribute("data-delete-name") || "这个账号";
+  if (!id) return;
+  const live = btn.getAttribute("data-delete-live") === "1";
+  const warn = live ? "当前有人正在使用，删除后对方会断开。" : "";
+  if (!confirm(`确定删除「${name}」？该桌面会被拆除，上面的 ChatGPT 登录态一并清除。${warn}`)) return;
+  try {
+    await api(`/api/admin/desks/${id}`, { method: "DELETE" });
+    toast(`已删除 ${name}`);
+    if (state.deskId === id) setHash("/");
+    await refresh();
+  } catch (err) {
+    toast(err.message || "未能删除");
+  }
+}
+
 function bind() {
   const logout = $("#logout");
   if (logout) logout.onclick = onLogout;
+  bindKick();
+  document.querySelectorAll("[data-delete]").forEach((btn) => {
+    btn.onclick = onDeleteDesk;
+  });
   document.querySelectorAll("[data-open]").forEach((btn) => {
-    btn.onclick = () => openDesk(btn.getAttribute("data-open"));
+    btn.onclick = (e) => {
+      if (e.target.closest("[data-kick],[data-delete]")) return;
+      openDesk(btn.getAttribute("data-open"));
+    };
     btn.onkeydown = (e) => {
       if (e.key === "Enter" && e.target === btn) openDesk(btn.getAttribute("data-open"));
     };
