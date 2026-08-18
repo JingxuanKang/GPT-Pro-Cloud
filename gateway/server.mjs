@@ -1,0 +1,469 @@
+import http from "node:http";
+import { readFileSync, existsSync } from "node:fs";
+import { extname, join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import httpProxy from "http-proxy";
+import { requirePasswordConfigured, createSessionToken, readSession, createLoginLimiter, createSessionStore } from "../lib/auth.mjs";
+import { parseInstances } from "../lib/instances.mjs";
+import { createUserStore } from "../lib/users.mjs";
+import { createPresence } from "../lib/presence.mjs";
+import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, projectOnboardScript, sleep } from "../lib/chrome.mjs";
+
+const PORT = Number(process.env.PORT || 8080);
+const AUTH_USER = process.env.AUTH_USER || "admin";
+const AUTH_PASSWORD = requirePasswordConfigured(process.env.AUTH_PASSWORD);
+const INSTANCES = parseInstances(process.env.INSTANCES || "a,b");
+const BY_ID = new Map(INSTANCES.map((i) => [i.id, i]));
+const VNC_USER = process.env.VNC_USER || "abc";
+const VNC_PASSWORD = process.env.VNC_PASSWORD || "";
+const COOKIE = "gpc_session";
+const DESK = "gpc_desk";
+const TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const WEB = join(dirname(fileURLToPath(import.meta.url)), "web");
+
+const USERS_FILE = process.env.USERS_FILE || "/data/users.json";
+const users = createUserStore({
+  file: USERS_FILE,
+  adminUser: AUTH_USER,
+  adminPassword: AUTH_PASSWORD,
+  deskIds: INSTANCES.map((i) => i.id),
+});
+const presence = createPresence();
+const sessions = createSessionStore({ file: join(dirname(USERS_FILE), "sessions.json"), ttlMs: TTL_MS });
+const loginLimiter = createLoginLimiter({ maxFails: 10, windowMs: 15 * 60 * 1000 });
+const onboardLocks = new Map();
+
+async function withOnboardLock(id, fn) {
+  const prev = onboardLocks.get(id) || Promise.resolve();
+  let release;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  onboardLocks.set(
+    id,
+    prev.then(() => gate),
+  );
+  await prev.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+async function runOnboard(id, name, { create = true } = {}) {
+  await waitForDesk(id, 45000);
+  let last = { ok: false, error: "工作区还没准备好" };
+  for (let i = 0; i < 3; i++) {
+    last = await evaluateInDesk(id, projectOnboardScript(name, { create }));
+    if (last?.ok) return last;
+    if (!create && last?.error === "找不到项目") {
+      last = await evaluateInDesk(id, projectOnboardScript(name, { create: true }));
+      if (last?.ok) return last;
+    }
+    await sleep(1500);
+  }
+  return last;
+}
+
+function kickOnboard(id, user) {
+  const name = String(user.username || "").trim();
+  if (!name) return;
+  const uid = user.id;
+  const create = !users.readyOn(uid, id);
+  withOnboardLock(id, () => runOnboard(id, name, { create }))
+    .then((r) => {
+      if (r?.ok) users.update(uid, { projectReady: true, projectName: name, projectDesk: id });
+    })
+    .catch(() => {});
+}
+
+const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: true });
+proxy.on("proxyReq", (proxyReq) => {
+  if (!VNC_PASSWORD) return;
+  proxyReq.setHeader("Authorization", `Basic ${Buffer.from(`${VNC_USER}:${VNC_PASSWORD}`).toString("base64")}`);
+});
+proxy.on("proxyRes", (proxyRes) => {
+  proxyRes.headers["permissions-policy"] = "clipboard-read=*, clipboard-write=*";
+  delete proxyRes.headers["cross-origin-embedder-policy"];
+  delete proxyRes.headers["cross-origin-opener-policy"];
+  delete proxyRes.headers["cross-origin-resource-policy"];
+});
+proxy.on("error", (err, _req, res) => {
+  console.error("proxy error:", err.message);
+  if (res && !res.headersSent && typeof res.writeHead === "function") {
+    res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+    res.end("暂时无法连接");
+  }
+});
+
+function parseCookie(header) {
+  const out = {};
+  if (!header) return out;
+  for (const part of header.split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+
+function getSession(req) {
+  const rec = readSession(sessions, parseCookie(req.headers.cookie)[COOKIE], Date.now(), TTL_MS);
+  if (!rec) return null;
+  const user = users.get(rec.userId);
+  if (!user || user.disabled) return null;
+  return { ...rec, user };
+}
+
+function clientIp(req) {
+  return String(req.socket?.remoteAddress || "unknown");
+}
+
+function json(res, status, body) {
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "same-origin",
+  });
+  res.end(JSON.stringify(body));
+}
+
+function setCookie(res, name, value, maxAge) {
+  const prev = res.getHeader("set-cookie");
+  const list = prev ? (Array.isArray(prev) ? prev : [prev]) : [];
+  list.push(`${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`);
+  res.setHeader("set-cookie", list);
+}
+
+const BODY_LIMIT = 1024 * 1024;
+
+async function readBody(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) {
+    size += c.length;
+    if (size > BODY_LIMIT) throw new Error("body too large");
+    chunks.push(c);
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return Object.fromEntries(new URLSearchParams(raw));
+  }
+}
+
+const PANEL_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' https://fonts.googleapis.com",
+  "font-src https://fonts.gstatic.com",
+  "img-src 'self' data: blob:",
+  "connect-src 'self'",
+  "frame-src 'self'",
+  "frame-ancestors 'self'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join("; ");
+
+function serveStatic(res, pathname) {
+  const file = pathname === "/" ? "index.html" : pathname.slice(1);
+  const full = join(WEB, file);
+  if (!full.startsWith(WEB) || !existsSync(full)) return false;
+  const types = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
+  const headers = {
+    "content-type": types[extname(full)] || "application/octet-stream",
+    "cache-control": "no-store",
+    "permissions-policy": "clipboard-read=*, clipboard-write=*",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "same-origin",
+  };
+  if (extname(full) === ".html" || pathname === "/") headers["content-security-policy"] = PANEL_CSP;
+  res.writeHead(200, headers);
+  res.end(readFileSync(full));
+  return true;
+}
+
+async function handleApi(req, res, url, sess) {
+  if (url.pathname === "/api/login" && req.method === "POST") {
+    const body = await readBody(req);
+    const ip = clientIp(req);
+    const key = `${ip}|${String(body.username || "").trim().slice(0, 64)}`;
+    if (loginLimiter.blocked(key)) {
+      console.warn(`login blocked (rate limit) user=${body.username} ip=${ip}`);
+      return json(res, 429, { error: "尝试次数过多，请 15 分钟后再试" });
+    }
+    const user = users.login(body.username, body.password);
+    if (!user) {
+      loginLimiter.fail(key);
+      console.warn(`login fail user=${body.username} ip=${ip}`);
+      return json(res, 401, { error: "用户名或密码错误" });
+    }
+    loginLimiter.ok(key);
+    console.log(`login ok user=${user.username} ip=${ip}`);
+    const token = createSessionToken();
+    sessions.set(token, { userId: user.id, expires: Date.now() + TTL_MS });
+    setCookie(res, COOKIE, token, Math.floor(TTL_MS / 1000));
+    return json(res, 200, { user });
+  }
+  if (url.pathname === "/api/logout" && req.method === "POST") {
+    const token = parseCookie(req.headers.cookie)[COOKIE];
+    if (token) sessions.delete(token);
+    setCookie(res, COOKIE, "", 0);
+    setCookie(res, DESK, "", 0);
+    return json(res, 200, { ok: true });
+  }
+  if (!sess) return json(res, 401, { error: "未登录" });
+  if (url.pathname === "/api/me") return json(res, 200, { user: sess.user, settings: users.settings() });
+  if (url.pathname === "/api/settings" && req.method === "GET") return json(res, 200, { settings: users.settings() });
+  if (url.pathname === "/api/admin/settings" && req.method === "POST") {
+    if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
+    const body = await readBody(req);
+    return json(res, 200, { settings: users.setSettings(body) });
+  }
+  if (url.pathname === "/api/desks") {
+    const desks = INSTANCES.filter((d) => users.canOpen(sess.user, d.id)).map((d) => ({
+      id: d.id,
+      name: users.deskNameOf(d.id) || d.name,
+    }));
+    return json(res, 200, { desks });
+  }
+  const rename = url.pathname.match(/^\/api\/admin\/desks\/([a-z0-9-]+)$/);
+  if (rename && req.method === "PATCH") {
+    if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
+    if (!BY_ID.has(rename[1])) return json(res, 404, { error: "账号不存在" });
+    try {
+      const body = await readBody(req);
+      const name = users.renameDesk(rename[1], body.name);
+      return json(res, 200, { ok: true, name: name || BY_ID.get(rename[1]).name });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+  if (url.pathname === "/api/presence") return json(res, 200, { presence: presence.all() });
+  if (url.pathname === "/api/presence/beat" && req.method === "POST") {
+    const body = await readBody(req);
+    const deskId = String(body.deskId || parseCookie(req.headers.cookie)[DESK] || "");
+    if (!users.canOpen(sess.user, deskId)) return json(res, 403, { error: "没有访问权限" });
+    return json(res, 200, { viewers: presence.beat(deskId, sess.user) });
+  }
+  if (url.pathname === "/api/presence/leave" && req.method === "POST") {
+    presence.leaveAll(sess.user.id);
+    return json(res, 200, { ok: true, presence: presence.all() });
+  }
+  const open = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/open$/);
+  if (open && req.method === "POST") {
+    const id = open[1];
+    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
+    presence.beat(id, sess.user);
+    if (users.assistOn()) kickOnboard(id, sess.user);
+    return json(res, 200, { ok: true, id });
+  }
+  const paste = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/paste$/);
+  if (paste && req.method === "POST") {
+    const id = paste[1];
+    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = Buffer.concat(chunks);
+    if (!body.length) return json(res, 400, { error: "空内容" });
+    if (body.length > 8 * 1024 * 1024) return json(res, 413, { error: "太大了" });
+    const ct = String(req.headers["content-type"] || "text/plain; charset=utf-8");
+    try {
+      const r = await fetch(`http://desktop-${id}:18790/`, {
+        method: "POST",
+        headers: { "content-type": ct, "content-length": String(body.length) },
+        body,
+      });
+      if (!r.ok) return json(res, 502, { error: "无法粘贴" });
+      return json(res, 200, { ok: true });
+    } catch {
+      return json(res, 502, { error: "无法粘贴" });
+    }
+  }
+  const copy = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/copy$/);
+  if (copy && req.method === "POST") {
+    const id = copy[1];
+    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    try {
+      const r = await fetch(`http://desktop-${id}:18790/grab`, { method: "POST" });
+      if (!r.ok) return json(res, 502, { error: "无法复制" });
+      const buf = Buffer.from(await r.arrayBuffer());
+      const ct = r.headers.get("content-type") || "text/plain; charset=utf-8";
+      res.writeHead(200, { "content-type": ct, "cache-control": "no-store" });
+      res.end(buf);
+      return;
+    } catch {
+      return json(res, 502, { error: "无法复制" });
+    }
+  }
+  const peek = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/peek$/);
+  if (peek && req.method === "GET") {
+    const id = peek[1];
+    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    try {
+      const { ct, buf } = await peekClipboard(id);
+      res.writeHead(200, { "content-type": ct, "cache-control": "no-store" });
+      res.end(buf);
+      return;
+    } catch {
+      return json(res, 502, { error: "无法读取剪贴板" });
+    }
+  }
+  const share = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/share$/);
+  if (share && req.method === "POST") {
+    const id = share[1];
+    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    if (!users.assistOn()) return json(res, 403, { error: "未开启页面协助" });
+    try {
+      const clicked = await evaluateInDesk(id, SHARE_CLICK);
+      if (!clicked?.ok) return json(res, 400, { error: clicked?.error || "分享失败" });
+      await sleep(400);
+      const { ct, buf } = await peekClipboard(id);
+      const text = buf.toString("utf8").trim();
+      if (!isShareUrl(text)) return json(res, 200, { ok: true, url: "" });
+      return json(res, 200, { ok: true, url: text.split(/\s+/)[0] });
+    } catch (e) {
+      return json(res, 502, { error: e.message || "分享失败" });
+    }
+  }
+  const onboard = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/onboard$/);
+  if (onboard && req.method === "POST") {
+    const id = onboard[1];
+    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    if (!users.assistOn()) return json(res, 403, { error: "未开启页面协助" });
+    const name = String(sess.user.username || "").trim();
+    if (!name) return json(res, 400, { error: "没有用户名" });
+    try {
+      const create = !users.readyOn(sess.user.id, id);
+      const r = await withOnboardLock(id, () => runOnboard(id, name, { create }));
+      if (!r?.ok) return json(res, 400, { error: r?.error || "工作区还没准备好" });
+      users.update(sess.user.id, { projectReady: true, projectName: name, projectDesk: id });
+      return json(res, 200, { ok: true, name, action: r.action || "opened", created: r.action === "created" });
+    } catch (e) {
+      const raw = e.message || "";
+      const error = /chromium|ChatGPT 页面|无法连接|未就绪/i.test(raw) ? "工作区还没准备好" : raw || "工作区还没准备好";
+      return json(res, 502, { error });
+    }
+  }
+  if (url.pathname === "/api/admin/users" && req.method === "GET") {
+    if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
+    return json(res, 200, { users: users.list() });
+  }
+  if (url.pathname === "/api/admin/users" && req.method === "POST") {
+    if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
+    try {
+      const body = await readBody(req);
+      return json(res, 200, { user: users.create(body) });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+  const one = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+  if (one && req.method === "PATCH") {
+    if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
+    try {
+      const body = await readBody(req);
+      const patch = {};
+      if (Array.isArray(body.desks)) patch.desks = body.desks;
+      if (body.password) patch.password = String(body.password);
+      if (typeof body.disabled === "boolean") patch.disabled = body.disabled;
+      const user = users.update(one[1], patch);
+      if (body.password || body.disabled === true) sessions.deleteByUser(one[1]);
+      if (body.disabled === true) presence.leaveAll(one[1]);
+      return json(res, 200, { user });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+  if (one && req.method === "DELETE") {
+    if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
+    try {
+      users.remove(one[1]);
+      sessions.deleteByUser(one[1]);
+      presence.leaveAll(one[1]);
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+  return json(res, 404, { error: "not found" });
+}
+
+async function handle(req, res) {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  if (url.pathname === "/healthz") {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("ok");
+    return;
+  }
+  const sess = getSession(req);
+  if (url.pathname.startsWith("/api/")) {
+    await handleApi(req, res, url, sess);
+    return;
+  }
+  if (url.pathname === "/" || url.pathname === "/app.css" || url.pathname === "/app.js") {
+    if (serveStatic(res, url.pathname === "/" ? "/" : url.pathname)) return;
+  }
+  if (!sess) {
+    if ((req.headers.upgrade || "").toLowerCase() === "websocket") {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    if (url.pathname === "/" || url.pathname.startsWith("/app")) {
+      serveStatic(res, "/");
+      return;
+    }
+    res.writeHead(302, { location: "/" });
+    res.end();
+    return;
+  }
+  const deskId = parseCookie(req.headers.cookie)[DESK];
+  const desk = deskId && BY_ID.get(deskId);
+  if (!desk || !users.canOpen(sess.user, desk.id)) {
+    if (serveStatic(res, "/")) return;
+    json(res, 403, { error: "请先选择账号" });
+    return;
+  }
+  proxy.web(req, res, { target: desk.target });
+}
+
+const server = http.createServer((req, res) => {
+  handle(req, res).catch((err) => {
+    if (err?.message === "body too large") {
+      if (!res.headersSent) json(res, 413, { error: "请求体太大" });
+      return;
+    }
+    console.error(err);
+    if (!res.headersSent) json(res, 500, { error: "internal error" });
+  });
+});
+
+server.on("upgrade", (req, socket, head) => {
+  const sess = getSession(req);
+  if (!sess) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  const deskId = parseCookie(req.headers.cookie)[DESK];
+  const desk = deskId && BY_ID.get(deskId);
+  if (!desk || !users.canOpen(sess.user, desk.id)) {
+    socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  if (VNC_PASSWORD) {
+    req.headers.authorization = `Basic ${Buffer.from(`${VNC_USER}:${VNC_PASSWORD}`).toString("base64")}`;
+  }
+  proxy.ws(req, socket, head, { target: desk.target });
+});
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`gateway on :${PORT} desks=${INSTANCES.map((i) => i.id).join(",")}`);
+});

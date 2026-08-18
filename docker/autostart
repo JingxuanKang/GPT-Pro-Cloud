@@ -1,0 +1,72 @@
+#!/bin/sh
+# openbox 用 /bin/sh 跑这份脚本，不要写 bash 数组。
+set -u
+
+export LIBGL_ALWAYS_SOFTWARE=1
+export DISPLAY="${DISPLAY:-:1}"
+
+PROXY_URL=""
+START_URL="https://chatgpt.com"
+# shellcheck source=/dev/null
+[ -f /config/.gpc-proxy ] && . /config/.gpc-proxy 2>/dev/null || true
+START_URL="${START_URL:-https://chatgpt.com}"
+
+if command -v xsettingsd >/dev/null 2>&1; then
+    cat > /config/.xsettingsd <<'EOF'
+Xft/Antialias 1
+Xft/Hinting 1
+Xft/HintStyle "hintslight"
+Xft/RGBA "rgb"
+Xft/DPI 98304
+Gtk/FontName "Noto Sans CJK SC 10"
+EOF
+    xsettingsd --config=/config/.xsettingsd 2>/dev/null &
+fi
+
+# 无任务栏：最小化 = 黑屏。每 2s 把不可见窗口拉回来。
+(
+    while sleep 2; do
+        all=$(xdotool search --name '.+' 2>/dev/null) || continue
+        vis=$(xdotool search --onlyvisible --name '.+' 2>/dev/null)
+        for w in ${all}; do
+            printf '%s\n' "${vis}" | grep -qx "${w}" || xdotool windowactivate "${w}" 2>/dev/null || true
+        done
+    done
+) &
+
+# 网关把本机剪贴板（含截图）送到这里，再 xclip + Ctrl+V。
+python3 /usr/local/bin/gpc-clipd >/tmp/gpc-clipd.log 2>&1 &
+python3 /usr/local/bin/gpc-cdp-fwd >/tmp/gpc-cdp-fwd.log 2>&1 &
+
+# 容器重建后 hostname 变了，旧 SingletonLock 会让 Chromium 秒退。
+rm -f /config/chromium/SingletonLock /config/chromium/SingletonSocket /config/chromium/SingletonCookie
+
+PROXY_FLAG=""
+if [ -n "${PROXY_URL:-}" ]; then
+    PROXY_FLAG="--proxy-server=${PROXY_URL}"
+    echo "[autostart] proxy-server=${PROXY_URL}"
+fi
+
+while true; do
+    echo "[autostart] 启动 Chromium → ${START_URL}"
+    /usr/bin/chromium \
+        --no-sandbox \
+        --test-type \
+        --no-first-run \
+        --no-default-browser-check \
+        --kiosk \
+        --start-fullscreen \
+        --start-maximized \
+        --password-store=basic \
+        --disable-gpu \
+        --force-device-scale-factor=1 \
+        --disable-background-networking \
+        --user-data-dir=/config/chromium \
+        --remote-debugging-port=9222 \
+        --remote-debugging-address=127.0.0.1 \
+        --remote-allow-origins=* \
+        --app="${START_URL}" \
+        ${PROXY_FLAG}
+    echo "[autostart] Chromium 退出，2 秒后重启"
+    sleep 2
+done

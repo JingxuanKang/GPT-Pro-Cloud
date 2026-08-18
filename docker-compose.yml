@@ -1,0 +1,75 @@
+# GPT-Pro on Cloud —— 独立产品。
+# gateway 是唯一入口；desktop-a / desktop-b 各一份 Chromium + ChatGPT 登录态。
+
+x-desktop-env: &desktop-env
+  PUID: ${PUID:-1000}
+  PGID: ${PGID:-1000}
+  TZ: ${TZ:-Asia/Shanghai}
+  CUSTOM_USER: abc
+  PASSWORD: ${VNC_PASSWORD:-gpc-internal}
+  TITLE: GPT Pro
+  START_URL: ${START_URL:-https://chatgpt.com}
+  PROXY_URL: ${PROXY_URL:-}
+  LIBGL_ALWAYS_SOFTWARE: "1"
+
+x-desktop: &desktop
+  build: ./docker
+  image: gpt-pro-cloud-desktop:local
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  shm_size: "1gb"
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "2"
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    image: gpt-pro-cloud-gateway:local
+    container_name: gpt-pro-cloud-gateway
+    environment:
+      - PORT=8080
+      - AUTH_PASSWORD=${AUTH_PASSWORD:?set AUTH_PASSWORD in .env}
+      - AUTH_USER=${AUTH_USER:-admin}
+      - USERS_FILE=/data/users.json
+      - INSTANCES=${INSTANCES:-a,b}
+      - VNC_USER=abc
+      - VNC_PASSWORD=${VNC_PASSWORD:-gpc-internal}
+    volumes:
+      - ./data-panel:/data
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${HTTP_PORT:-36090}:8080"
+    depends_on:
+      - desktop-a
+      - desktop-b
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  desktop-a:
+    <<: *desktop
+    container_name: gpt-pro-cloud-a
+    environment:
+      <<: *desktop-env
+      # 本账号专属出口代理，留空则用全局 PROXY_URL
+      PROXY_URL_OVERRIDE: ${PROXY_URL_A:-}
+    volumes:
+      - ./data/a:/config
+    # Chromium DevTools 不映射到宿主机，只在 compose 网里给 gateway 用。
+
+  desktop-b:
+    <<: *desktop
+    container_name: gpt-pro-cloud-b
+    environment:
+      <<: *desktop-env
+      PROXY_URL_OVERRIDE: ${PROXY_URL_B:-}
+    volumes:
+      - ./data/b:/config

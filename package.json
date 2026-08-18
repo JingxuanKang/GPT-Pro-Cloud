@@ -1,0 +1,8 @@
+{
+  "name": "gpt-pro-cloud",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/unit.test.mjs test/structure.test.mjs test/users.test.mjs"
+  }
+}

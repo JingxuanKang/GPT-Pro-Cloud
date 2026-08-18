@@ -1,0 +1,10 @@
+.env
+data/
+data-panel/
+.claude/
+/index.html
+node_modules/
+.DS_Store
+*.log
+__pycache__/
+*.pyc

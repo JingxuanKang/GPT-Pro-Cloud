@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="GPT-Pro Cloud">
+  <defs>
+    <style>
+      .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+      .sans { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    </style>
+  </defs>
+
+  <!-- paper ground -->
+  <rect width="1200" height="300" fill="#f7f6f2"/>
+  <rect x="0.5" y="0.5" width="1199" height="299" fill="none" stroke="#e8e6df"/>
+
+  <!-- left face: spark mark on an ink tile -->
+  <g transform="translate(150,96)">
+    <rect width="108" height="108" rx="26" fill="#1b1a17"/>
+    <path transform="translate(18,18) scale(3)" fill="#f7f6f2"
+      d="M12.9 1.8c.5 5.9 3.4 8.8 9.3 9.3v1.8c-5.9.5-8.8 3.4-9.3 9.3h-1.8c-.5-5.9-3.4-8.8-9.3-9.3v-1.8c5.9-.5 8.8-3.4 9.3-9.3h1.8z"/>
+  </g>
+
+  <!-- right face: two machine cards, one live -->
+  <g transform="translate(930,84)">
+    <g>
+      <rect width="130" height="62" rx="12" fill="#ffffff" stroke="#e8e6df"/>
+      <circle cx="20" cy="22" r="5" fill="#178f5f"/>
+      <rect x="34" y="18" width="62" height="8" rx="4" fill="#d8d5cb"/>
+      <rect x="14" y="40" width="44" height="7" rx="3.5" fill="#eceae2"/>
+      <rect x="64" y="40" width="28" height="7" rx="3.5" fill="#eceae2"/>
+    </g>
+    <g transform="translate(14,70)">
+      <rect width="130" height="62" rx="12" fill="#ffffff" stroke="#e8e6df"/>
+      <circle cx="20" cy="22" r="5" fill="#d8d5cb"/>
+      <rect x="34" y="18" width="52" height="8" rx="4" fill="#d8d5cb"/>
+      <rect x="14" y="40" width="58" height="7" rx="3.5" fill="#eceae2"/>
+    </g>
+  </g>
+
+  <!-- wordmark -->
+  <text x="600" y="128" text-anchor="middle" class="mono" font-size="56" font-weight="700" letter-spacing="10" fill="#1b1a17">GPT-PRO CLOUD</text>
+
+  <!-- subtitle -->
+  <text x="600" y="170" text-anchor="middle" class="sans" font-size="19" fill="#56544e">Your signed-in ChatGPT Pro, served from your own machine</text>
+
+  <!-- tech line -->
+  <text x="600" y="210" text-anchor="middle" class="mono" font-size="15" font-weight="600" letter-spacing="1">
+    <tspan fill="#2496ed">Docker</tspan><tspan fill="#918f86">  ·  </tspan><tspan fill="#178f5f">Chromium kiosk</tspan><tspan fill="#918f86">  ·  </tspan><tspan fill="#5257cf">KasmVNC</tspan><tspan fill="#918f86">  ·  </tspan><tspan fill="#b45309">Node.js gateway</tspan>
+  </text>
+
+  <!-- motto -->
+  <text x="600" y="244" text-anchor="middle" class="mono" font-size="12.5" letter-spacing="3" fill="#918f86">ONE GATEWAY · MANY DESKS · LOGIN ONCE</text>
+</svg>
