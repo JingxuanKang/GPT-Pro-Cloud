@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import httpProxy from "http-proxy";
 import { createSessionToken, readSession, createLoginLimiter, createSessionStore } from "../lib/auth.mjs";
 import { parseInstances } from "../lib/instances.mjs";
+import { createDeskRegistry, provisionDesk } from "../lib/desks.mjs";
+import { createDockerClient, ensureDeskContainer } from "../lib/docker.mjs";
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, projectOnboardScript, sleep } from "../lib/chrome.mjs";
@@ -12,8 +14,12 @@ import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, pr
 const PORT = Number(process.env.PORT || 8080);
 const AUTH_USER = process.env.AUTH_USER || "admin";
 const AUTH_PASSWORD = String(process.env.AUTH_PASSWORD || "").trim(); // 可选：留空走首次访问向导
-const INSTANCES = parseInstances(process.env.INSTANCES || "a,b");
-const BY_ID = new Map(INSTANCES.map((i) => [i.id, i]));
+const SEED = parseInstances(process.env.INSTANCES || "a,b");
+const registry = createDeskRegistry(SEED);
+const docker = createDockerClient({
+  socketPath: process.env.DOCKER_SOCKET || "/var/run/docker.sock",
+  templateName: process.env.DESKTOP_TEMPLATE || "gpt-pro-cloud-a",
+});
 const VNC_USER = process.env.VNC_USER || "abc";
 const VNC_PASSWORD = process.env.VNC_PASSWORD || "";
 const COOKIE = "gpc_session";
@@ -26,8 +32,9 @@ const users = createUserStore({
   file: USERS_FILE,
   adminUser: AUTH_USER,
   adminPassword: AUTH_PASSWORD,
-  deskIds: INSTANCES.map((i) => i.id),
+  deskIds: SEED.map((i) => i.id),
 });
+for (const id of users.extraDeskIds()) registry.add(id);
 const presence = createPresence();
 const sessions = createSessionStore({ file: join(dirname(USERS_FILE), "sessions.json"), ttlMs: TTL_MS });
 const loginLimiter = createLoginLimiter({ maxFails: 10, windowMs: 15 * 60 * 1000 });
@@ -245,21 +252,41 @@ async function handleApi(req, res, url, sess) {
   }
   if (url.pathname === "/api/desks") {
     const isAdmin = sess.user.role === "admin";
-    const desks = INSTANCES.filter((d) => users.canOpen(sess.user, d.id)).map((d) => ({
-      id: d.id,
-      name: users.deskNameOf(d.id) || d.name,
-      ...(isAdmin ? { proxy: users.deskProxyOf(d.id) } : {}),
-    }));
+    const desks = registry
+      .all()
+      .filter((d) => users.canOpen(sess.user, d.id))
+      .map((d) => ({
+        id: d.id,
+        name: users.deskNameOf(d.id) || d.name,
+        ...(isAdmin ? { proxy: users.deskProxyOf(d.id) } : {}),
+      }));
     return json(res, 200, { desks });
+  }
+  if (url.pathname === "/api/admin/desks" && req.method === "POST") {
+    if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
+    const body = await readBody(req);
+    try {
+      const desk = await provisionDesk({
+        users,
+        registry,
+        name: body.name,
+        id: body.id,
+        ensure: (id) => ensureDeskContainer(id, docker),
+      });
+      console.log(`desk added id=${desk.id} name=${desk.name} by=${sess.user.username} ip=${clientIp(req)}`);
+      return json(res, 200, { desk });
+    } catch (e) {
+      return json(res, e.status || 400, { error: e.message });
+    }
   }
   const rename = url.pathname.match(/^\/api\/admin\/desks\/([a-z0-9-]+)$/);
   if (rename && req.method === "PATCH") {
     if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
-    if (!BY_ID.has(rename[1])) return json(res, 404, { error: "账号不存在" });
+    if (!registry.has(rename[1])) return json(res, 404, { error: "账号不存在" });
     try {
       const body = await readBody(req);
       const out = { ok: true };
-      if ("name" in body) out.name = users.renameDesk(rename[1], body.name) || BY_ID.get(rename[1]).name;
+      if ("name" in body) out.name = users.renameDesk(rename[1], body.name) || registry.get(rename[1]).name;
       if ("proxy" in body) {
         const proxy = users.setDeskProxy(rename[1], body.proxy);
         try {
@@ -293,7 +320,7 @@ async function handleApi(req, res, url, sess) {
   const open = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/open$/);
   if (open && req.method === "POST") {
     const id = open[1];
-    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
     if (users.assistOn()) kickOnboard(id, sess.user);
@@ -302,7 +329,7 @@ async function handleApi(req, res, url, sess) {
   const paste = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/paste$/);
   if (paste && req.method === "POST") {
     const id = paste[1];
-    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
     const chunks = [];
     for await (const c of req) chunks.push(c);
     const body = Buffer.concat(chunks);
@@ -324,7 +351,7 @@ async function handleApi(req, res, url, sess) {
   const copy = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/copy$/);
   if (copy && req.method === "POST") {
     const id = copy[1];
-    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
     try {
       const r = await fetch(`http://desktop-${id}:18790/grab`, { method: "POST" });
       if (!r.ok) return json(res, 502, { error: "无法复制" });
@@ -340,7 +367,7 @@ async function handleApi(req, res, url, sess) {
   const peek = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/peek$/);
   if (peek && req.method === "GET") {
     const id = peek[1];
-    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
     try {
       const { ct, buf } = await peekClipboard(id);
       res.writeHead(200, { "content-type": ct, "cache-control": "no-store" });
@@ -353,7 +380,7 @@ async function handleApi(req, res, url, sess) {
   const share = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/share$/);
   if (share && req.method === "POST") {
     const id = share[1];
-    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
     if (!users.assistOn()) return json(res, 403, { error: "未开启页面协助" });
     try {
       const clicked = await evaluateInDesk(id, SHARE_CLICK);
@@ -370,7 +397,7 @@ async function handleApi(req, res, url, sess) {
   const onboard = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/onboard$/);
   if (onboard && req.method === "POST") {
     const id = onboard[1];
-    if (!users.canOpen(sess.user, id) || !BY_ID.has(id)) return json(res, 403, { error: "没有访问权限" });
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
     if (!users.assistOn()) return json(res, 403, { error: "未开启页面协助" });
     const name = String(sess.user.username || "").trim();
     if (!name) return json(res, 400, { error: "没有用户名" });
@@ -460,7 +487,7 @@ async function handle(req, res) {
     return;
   }
   const deskId = parseCookie(req.headers.cookie)[DESK];
-  const desk = deskId && BY_ID.get(deskId);
+  const desk = deskId && registry.get(deskId);
   if (!desk || !users.canOpen(sess.user, desk.id)) {
     if (serveStatic(res, "/")) return;
     json(res, 403, { error: "请先选择账号" });
@@ -488,7 +515,7 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
   const deskId = parseCookie(req.headers.cookie)[DESK];
-  const desk = deskId && BY_ID.get(deskId);
+  const desk = deskId && registry.get(deskId);
   if (!desk || !users.canOpen(sess.user, desk.id)) {
     socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     socket.destroy();
@@ -500,6 +527,20 @@ server.on("upgrade", (req, socket, head) => {
   proxy.ws(req, socket, head, { target: desk.target });
 });
 
+async function reconcileExtraDesks() {
+  const extras = users.extraDeskIds();
+  if (!extras.length) return;
+  for (const id of extras) {
+    try {
+      await ensureDeskContainer(id, docker);
+      console.log(`desk ${id}: container ready`);
+    } catch (e) {
+      console.error(`desk ${id}: ${e.message}`);
+    }
+  }
+}
+
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`gateway on :${PORT} desks=${INSTANCES.map((i) => i.id).join(",")}`);
+  console.log(`gateway on :${PORT} desks=${registry.ids().join(",")}`);
+  reconcileExtraDesks();
 });
