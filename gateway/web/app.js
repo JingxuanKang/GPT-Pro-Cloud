@@ -293,7 +293,7 @@ function renderSettings() {
   const rows = state.desks
     .map(
       (d) => `<div class="proxy-row">
-        <div class="proxy-id"><b>${esc(d.name)}</b><span>desk-${esc(d.id)}</span></div>
+        <div class="proxy-id"><b>${esc(d.name)}</b></div>
         <input class="proxy-input" data-proxy-input="${esc(d.id)}" value="${esc(d.proxy || "")}" placeholder="默认出口" autocomplete="off" spellcheck="false">
         <button type="button" class="btn ghost" data-proxy-save="${esc(d.id)}">保存</button>
       </div>`,
