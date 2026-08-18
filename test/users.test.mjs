@@ -124,6 +124,31 @@ describe("users + presence", () => {
     assert.throws(() => store.setDeskProxy("zz", "http://x:1"), /账号不存在/);
   });
 
+  it("persists an extra desk across reload and grants it to admin", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gpc-desk-"));
+    const file = join(dir, "users.json");
+    const a = createUserStore({ file, adminUser: "admin", adminPassword: "admin-secret", deskIds: ["a", "b"] });
+    const saved = a.addDesk("c", "客户号");
+    assert.deepEqual(saved, { id: "c", name: "客户号" });
+    assert.deepEqual(a.listDeskIds(), ["a", "b", "c"]);
+    assert.deepEqual(a.extraDeskIds(), ["c"]);
+    assert.equal(a.deskNameOf("c"), "客户号");
+    const admin = a.login("admin", "admin-secret");
+    assert.ok(a.canOpen(admin, "c"));
+    assert.deepEqual(admin.desks, ["a", "b", "c"]);
+    const m = a.create({ username: "erin", password: "secret6", desks: ["c"] });
+    assert.deepEqual(m.desks, ["c"]);
+    assert.equal(a.canOpen(m, "c"), true);
+    assert.equal(a.canOpen(m, "a"), false);
+    const b = createUserStore({ file, adminUser: "admin", adminPassword: "admin-secret", deskIds: ["a", "b"] });
+    assert.deepEqual(b.listDeskIds(), ["a", "b", "c"]);
+    assert.deepEqual(b.extraDeskIds(), ["c"]);
+    assert.equal(b.deskNameOf("c"), "客户号");
+    assert.ok(b.canOpen(b.login("admin", "admin-secret"), "c"));
+    assert.throws(() => a.addDesk("c", "重复"), /已存在/);
+    assert.throws(() => a.addDesk("Bad_ID", "x"), /不合法/);
+  });
+
   it("clears a user from every desk", () => {
     const p = createPresence();
     const ada = { id: "1", username: "ada" };

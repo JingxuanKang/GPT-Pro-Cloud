@@ -61,11 +61,15 @@ cloudflared tunnel --url http://127.0.0.1:36090
 
 ## 添加账号
 
-一个 ChatGPT 账号对应一个桌面容器。
+一个 ChatGPT 账号对应一个桌面容器。管理员在首页点 **添加 ChatGPT 账号**、起个名字，就会出现新卡片。打开后登录一次 ChatGPT，和 a / b 一样。
 
-1. 在 `docker-compose.yml` 里复制一个 `desktop-*` 服务，卷挂载 `./data/<id>:/config`。
-2. 把 id 追加到 `.env` 的 `INSTANCES`。
-3. 执行 `docker compose up -d --build`，打开新卡片登录一次。
+网关通过 Docker Engine API 克隆 `desktop-a` 的镜像，接到同一 compose 网络（DNS `desktop-<id>`，卷 `./data/<id>:/config`）。额外账号写在 `data-panel/users.json`，容器 `restart: unless-stopped`，网关重启后不必改 `INSTANCES` 或 `docker-compose.yml`。
+
+一次宿主机配置：`docker-compose.yml` 把 `/var/run/docker.sock` 挂进 gateway。拉下这段改动后执行一次 `docker compose up -d` 让挂载生效。之后加号是面板操作，不要再 SSH 去复制 compose 服务。
+
+`INSTANCES` 和 `desktop-a` / `desktop-b` 仍是内置席位，不要删；新账号以 `desktop-a` 为模板克隆。
+
+Cloud / CI 虚拟机往往不跑桌面镜像，无法证明 Chromium 是活的。请在真实 Docker 宿主机（phoenix）上验证：面板里加一个账号、`docker ps` 能看到 `gpt-pro-cloud-<id>`、打开卡片并完成 ChatGPT 登录。
 
 ## 团队与权限
 
@@ -99,7 +103,7 @@ cloudflared tunnel --url http://127.0.0.1:36090
 | 配置项 | 作用 |
 | --- | --- |
 | `AUTH_PASSWORD` | 可选：预设管理员密码，留空走首次访问向导 |
-| `INSTANCES` | 逗号分隔的桌面 id，决定显示哪些卡片 |
+| `INSTANCES` | compose 内置席位（`a,b`）。额外账号在面板里添加 |
 | `BIND_ADDR` | 网关监听地址；走隧道时填 `127.0.0.1`，内网则填局域网或 VPN 地址 |
 | `PROXY_URL_A`、`PROXY_URL_B` | 按账号出口代理的默认值；「设置」页里的修改优先且立即生效 |
 | `PROXY_URL` | 所有账号共用的默认代理 |
@@ -109,7 +113,7 @@ cloudflared tunnel --url http://127.0.0.1:36090
 ## 架构
 
 ```
-浏览器 ──▶ gateway (:36090) ──▶ desktop-a / desktop-b
+浏览器 ──▶ gateway (:36090) ──▶ desktop-a / desktop-b / 额外桌面
            登录 · 选账号 · 团队      Chromium --kiosk chatgpt.com
 ```
 

@@ -14,7 +14,7 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, view: "home", deskId: null, err: "", modal: false, manage: null, rename: null, setup: false, boot: true };
+const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, view: "home", deskId: null, err: "", modal: false, manage: null, rename: null, create: false, setup: false, boot: true };
 
 function assistOn() {
   return !!state.settings?.assist;
@@ -67,6 +67,7 @@ const ICO = {
   share: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14 4h6v6h-2V7.4l-7.3 7.3-1.4-1.4L16.6 6H14V4ZM6 6h5v2H7.8A1.8 1.8 0 0 0 6 9.8v6.4C6 17.2 6.8 18 7.8 18h6.4c1 0 1.8-.8 1.8-1.8V13h2v3.2A3.8 3.8 0 0 1 14.2 20H7.8A3.8 3.8 0 0 1 4 16.2V9.8A3.8 3.8 0 0 1 7.8 6H11V6H6Z"/></svg>`,
   arrow: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13.2 5.3 18.9 11l.9 1-.9 1-5.7 5.7-1.4-1.4 4.3-4.3H4v-2h12.1l-4.3-4.3 1.4-1.4Z"/></svg>`,
   pencil: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14.06 6.19l3.75 3.75L7.5 20.25H3.75V16.5L14.06 6.19Zm1.41-1.41 1.83-1.83a1 1 0 0 1 1.41 0l2.34 2.34a1 1 0 0 1 0 1.41l-1.83 1.83-3.75-3.75Z"/></svg>`,
+  plus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/></svg>`,
 };
 
 function greet() {
@@ -186,6 +187,20 @@ function renderHome() {
       </div>`;
     })
     .join("");
+  const addCard = isAdmin
+    ? `<div class="machine add" data-add-desk role="button" tabindex="0">
+        <span class="m-body">
+          <span class="m-head">
+            <span class="m-mark plus">${ICO.plus}</span>
+          </span>
+          <span class="m-name">添加 ChatGPT 账号</span>
+        </span>
+        <span class="m-foot">
+          <span class="m-users"><span>启动一台新的桌面</span></span>
+          <span class="m-go">添加${ICO.arrow}</span>
+        </span>
+      </div>`
+    : "";
   const rd = state.rename ? state.desks.find((d) => d.id === state.rename) : null;
   const renameModal = rd
     ? `<div class="mask" id="rename-mask">
@@ -201,7 +216,22 @@ function renderHome() {
         </form>
       </div>`
     : "";
-  return shell(`${head}${cards ? `<div class="machines">${cards}</div>` : ""}${renameModal}`);
+  const createModal = state.create
+    ? `<div class="mask" id="create-mask">
+        <form class="sheet" id="create-form">
+          <h2>添加 ChatGPT 账号</h2>
+          <p class="hint">会启动一台新的 Chromium 桌面。打开新卡片后登录一次 ChatGPT，之后就能像现有账号一样分给成员。</p>
+          <div class="err" id="create-err"></div>
+          <label class="field"><span>名字</span><input name="name" maxlength="24" placeholder="例如 客户号" autofocus autocomplete="off" required></label>
+          <div class="sheet-actions">
+            <button class="btn ghost" type="button" id="create-cancel">取消</button>
+            <button class="btn" type="submit">添加</button>
+          </div>
+        </form>
+      </div>`
+    : "";
+  const grid = cards || addCard ? `<div class="machines">${cards}${addCard}</div>` : "";
+  return shell(`${head}${grid}${renameModal}${createModal}`);
 }
 
 function renderAdmin() {
@@ -475,6 +505,7 @@ async function onLogout(e) {
   state.modal = false;
   state.manage = null;
   state.rename = null;
+  state.create = false;
   setHash("/login");
 }
 
@@ -810,6 +841,57 @@ function bind() {
       if (e.key === "Enter" && e.target === btn) openDesk(btn.getAttribute("data-open"));
     };
   });
+  document.querySelectorAll("[data-add-desk]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      state.create = true;
+      render();
+    };
+    btn.onkeydown = (e) => {
+      if (e.key === "Enter" && e.target === btn) {
+        state.create = true;
+        render();
+      }
+    };
+  });
+  const cCancel = $("#create-cancel");
+  if (cCancel)
+    cCancel.onclick = () => {
+      state.create = false;
+      render();
+    };
+  const cMask = $("#create-mask");
+  if (cMask)
+    cMask.onclick = (e) => {
+      if (e.target === cMask) {
+        state.create = false;
+        render();
+      }
+    };
+  const cForm = $("#create-form");
+  if (cForm)
+    cForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(cForm);
+      const submit = cForm.querySelector("[type=submit]");
+      if (submit) {
+        submit.disabled = true;
+        submit.textContent = "正在启动…";
+      }
+      try {
+        await api("/api/admin/desks", { method: "POST", body: { name: fd.get("name") } });
+        state.create = false;
+        toast("新账号已启动，打开卡片登录 ChatGPT");
+        await refresh();
+      } catch (err) {
+        const box = $("#create-err");
+        if (box) box.textContent = err.message;
+        if (submit) {
+          submit.disabled = false;
+          submit.textContent = "添加";
+        }
+      }
+    };
   const add = $("#add-user");
   if (add)
     add.onclick = () => {
@@ -997,7 +1079,7 @@ async function tick() {
         who.textContent = names;
         who.hidden = !names;
       }
-    } else if (!state.modal && !state.manage && !state.rename) {
+    } else if (!state.modal && !state.manage && !state.rename && !state.create) {
       const r = await api("/api/presence");
       state.presence = r.presence || {};
       if (state.view === "home" || state.view === "admin") render();

@@ -5,9 +5,18 @@
 | 容器 | 说明 |
 |---|---|
 | `gpt-pro-cloud-gateway` | 唯一入口 `:36090`，登录、账号选择、团队管理、桌面反代 |
-| `gpt-pro-cloud-a` / `b` | 每个 ChatGPT 账号一只独立 Chromium；DevTools `9222/9223` 不映射宿主机，CDP 转发只接受 gateway |
+| `gpt-pro-cloud-a` / `b` | 内置 ChatGPT 席位，各一只独立 Chromium；DevTools `9222/9223` 不映射宿主机，CDP 转发只接受 gateway |
+| `gpt-pro-cloud-<id>` | 面板里添加的额外席位，由 gateway 克隆 `desktop-a`；不写进 compose |
 
-持久化数据都在仓库目录下：`./data/{a,b}`（Chromium profile 与 ChatGPT 登录态）、`./data-panel/`（成员 `users.json`、会话 `sessions.json` 与设置）。两者都被 gitignore。
+持久化数据都在仓库目录下：`./data/<id>`（Chromium profile 与 ChatGPT 登录态）、`./data-panel/`（成员 `users.json`、会话 `sessions.json`、设置，以及 `extraDeskIds`）。两者都被 gitignore。
+
+## 添加账号
+
+管理员在首页添加 ChatGPT 账号。gateway 需要访问 Docker Engine：compose 已挂载 `/var/run/docker.sock`。拉代码后执行一次 `docker compose up -d` 让挂载生效，之后不必 SSH 改 compose 或 `INSTANCES`。
+
+额外容器不在 compose 服务列表里，但会加入同一个 compose 网络（别名 `desktop-<id>`），`restart: unless-stopped`。网关启动时会按 `users.json` 里的 `extraDeskIds` 把它们拉起来并接到当前网络。
+
+Cloud / CI 虚拟机通常不跑桌面镜像。请在真实 Docker 宿主机上确认：`docker ps` 出现 `gpt-pro-cloud-<id>`，打开新卡片能进 Chromium 并登录 ChatGPT。
 
 ## 启动
 
@@ -46,6 +55,7 @@ curl -fsS http://127.0.0.1:36090/healthz
 ```bash
 docker compose logs -f gateway
 docker compose logs -f desktop-a
+docker logs -f gpt-pro-cloud-<id>   # 面板里加出来的额外桌面
 ```
 
 ## 更新与回滚

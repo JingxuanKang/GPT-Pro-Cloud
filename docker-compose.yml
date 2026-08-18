@@ -1,5 +1,6 @@
 # GPT-Pro on Cloud —— 独立产品。
-# gateway 是唯一入口；desktop-a / desktop-b 各一份 Chromium + ChatGPT 登录态。
+# gateway 是唯一入口；desktop-a / desktop-b 是内置席位。额外账号在面板里添加，
+# 由 gateway 经 docker.sock 克隆同一桌面镜像，不必再改这份 compose。
 
 x-desktop-env: &desktop-env
   PUID: ${PUID:-1000}
@@ -40,8 +41,12 @@ services:
       - INSTANCES=${INSTANCES:-a,b}
       - VNC_USER=abc
       - VNC_PASSWORD=${VNC_PASSWORD:-gpc-internal}
+      # 面板「添加账号」通过 Engine API 克隆 desktop-a；一次配置：挂上 docker.sock
+      - DESKTOP_TEMPLATE=gpt-pro-cloud-a
+      - DOCKER_SOCKET=/var/run/docker.sock
     volumes:
       - ./data-panel:/data
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${BIND_ADDR:-0.0.0.0}:${HTTP_PORT:-36090}:8080"
     depends_on:

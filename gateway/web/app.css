@@ -254,6 +254,17 @@ button { cursor: pointer; }
   box-shadow: var(--shadow-2);
   transform: translateY(-2px);
 }
+.machine.add {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  box-shadow: none;
+}
+.machine.add:hover {
+  border-color: var(--ink);
+  box-shadow: none;
+}
+.m-mark.plus { color: var(--ink-2); }
+.m-mark.plus svg { width: 22px; height: 22px; }
 .m-body { display: block; padding: 20px 20px 18px; }
 .m-head {
   display: flex;

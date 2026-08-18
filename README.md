@@ -61,11 +61,15 @@ For a stable hostname, point a named tunnel at the same local port (that needs a
 
 ## Add an account
 
-One ChatGPT account is one desktop container.
+One ChatGPT account is one desktop container. The administrator adds one from the home page: **Add ChatGPT account**, give it a name, and a new card appears. Open it and log in to ChatGPT once — same as `a` / `b`.
 
-1. Copy a `desktop-*` service in `docker-compose.yml`, with volume `./data/<id>:/config`.
-2. Append the id to `INSTANCES` in `.env`.
-3. Run `docker compose up -d --build`, open the new card, and log in once.
+The gateway clones the `desktop-a` image onto the compose network via the Docker Engine API (`desktop-<id>` DNS, volume `./data/<id>:/config`). Extra desks are stored in `data-panel/users.json` and their containers use `restart: unless-stopped`, so they survive a gateway restart without editing `INSTANCES` or `docker-compose.yml`.
+
+One-time host setup: `docker-compose.yml` mounts `/var/run/docker.sock` into the gateway. After pulling this change, run `docker compose up -d` once so the mount is applied. Then adding a desk is a panel action — do not SSH in to copy compose services as the happy path.
+
+`INSTANCES` and the `desktop-a` / `desktop-b` services stay as the built-in seats. Do not remove them; new desks are cloned from `desktop-a`.
+
+A Cloud / CI VM that does not run the desktop image cannot prove a live Chromium. On a real Docker host (phoenix) verify: add a desk in the UI, `docker ps` shows `gpt-pro-cloud-<id>`, open the card, and complete the ChatGPT login.
 
 ## Team access
 
@@ -99,7 +103,7 @@ Everything lives in `.env` — the commented [`.env.example`](.env.example) is t
 | Setting | Purpose |
 | --- | --- |
 | `AUTH_PASSWORD` | Optional: pre-seed the administrator password; leave empty to use the first-visit wizard |
-| `INSTANCES` | Comma-separated desktop ids to show as cards |
+| `INSTANCES` | Built-in compose seats (`a,b`). Extra desks are added in the panel |
 | `BIND_ADDR` | Address the gateway publishes on; `127.0.0.1` when tunneling, LAN or VPN address on a private network |
 | `PROXY_URL_A`, `PROXY_URL_B` | Default per-account proxy; edits on the Settings page take precedence and apply immediately |
 | `PROXY_URL` | Default proxy shared by every account |
@@ -109,7 +113,7 @@ A proxy is only needed when the server cannot reach ChatGPT directly (for exampl
 ## Architecture
 
 ```
-browser ──▶ gateway (:36090) ──▶ desktop-a / desktop-b
+browser ──▶ gateway (:36090) ──▶ desktop-a / desktop-b / extra desks
             login · picker · team    Chromium --kiosk chatgpt.com
 ```
 

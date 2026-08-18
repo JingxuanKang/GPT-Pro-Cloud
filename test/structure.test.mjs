@@ -92,7 +92,18 @@ describe("standalone product", () => {
     assert.match(ui, /"PATCH"/);
     assert.match(gw, /\/api\\\/admin\\\/desks/);
     assert.match(gw, /renameDesk/);
+    assert.match(gw, /provisionDesk/);
+    assert.match(gw, /ensureDeskContainer/);
+    assert.match(gw, /reconcileExtraDesks/);
     assert.match(ui, /data-rename/);
+    assert.match(ui, /data-add-desk/);
+    assert.match(ui, /\/api\/admin\/desks/);
+    assert.match(ui, /正在启动/);
+    const compose = readFileSync(resolve(root, "docker-compose.yml"), "utf8");
+    assert.match(compose, /\/var\/run\/docker\.sock:\/var\/run\/docker\.sock/);
+    assert.match(compose, /DESKTOP_TEMPLATE=gpt-pro-cloud-a/);
+    assert.match(compose, /desktop-a/);
+    assert.match(compose, /desktop-b/);
     assert.match(gw, /\/api\/setup/);
     assert.match(gw, /hasAdmin/);
     assert.match(ui, /创建管理员/);
