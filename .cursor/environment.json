@@ -1,0 +1,15 @@
+{
+  "name": "GPT-Pro Cloud",
+  "user": "ubuntu",
+  "install": "cd gateway && npm install",
+  "ports": [
+    { "name": "gateway", "port": 8080 }
+  ],
+  "terminals": [
+    {
+      "name": "gateway",
+      "description": "GPT-Pro Cloud gateway (panel, login, account picker, team management) on http://localhost:8080. Uses the AUTH_PASSWORD secret when set, otherwise a dev fallback. The KasmVNC desktop containers require Docker + a manual ChatGPT login and are not started here.",
+      "command": "AUTH_PASSWORD=\"${AUTH_PASSWORD:-devpass}\" AUTH_USER=\"${AUTH_USER:-admin}\" PORT=8080 INSTANCES=\"${INSTANCES:-a,b}\" USERS_FILE=/workspace/data-panel/users.json node gateway/server.mjs"
+    }
+  ]
+}
