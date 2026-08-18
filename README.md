@@ -88,7 +88,7 @@ Passwords are stored as per-user salted scrypt hashes. Sign-in is rate limited p
 
 ## Clipboard
 
-The clipboard is two-way: copy on your machine, click into the desk, then Cmd/Ctrl+V; select in ChatGPT and Cmd/Ctrl+C to bring it back. Text and screenshots both work. The desktop is in an iframe, so the browser may ask for clipboard permission — if it does not land on your machine, click the chip in the top bar.
+The clipboard is two-way between your machine and the desk. Text and screenshots both work.
 
 ## Sharing and memory isolation
 
