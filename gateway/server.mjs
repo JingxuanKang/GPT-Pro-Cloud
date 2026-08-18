@@ -117,7 +117,9 @@ function getSession(req) {
 }
 
 function clientIp(req) {
-  return String(req.socket?.remoteAddress || "unknown");
+  // 经 Cloudflare Tunnel 时源地址是本机，真实来源在 CF-Connecting-IP；
+  // 直连入口只在内网（BIND_ADDR 绑内网地址），伪造该头无利可图。
+  return String(req.headers["cf-connecting-ip"] || req.socket?.remoteAddress || "unknown");
 }
 
 function json(res, status, body) {
