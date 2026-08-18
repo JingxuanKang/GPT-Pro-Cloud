@@ -88,6 +88,9 @@ describe("standalone product", () => {
     assert.match(gw, /429/);
     assert.match(gw, /"PATCH"/);
     assert.match(gw, /deleteByUser/);
+    assert.match(gw, /\/kick/);
+    assert.match(gw, /kickLiveSession/);
+    assert.match(gw, /createSocketHub/);
     assert.match(ui, /data-manage/);
     assert.match(ui, /"PATCH"/);
     assert.match(gw, /\/api\\\/admin\\\/desks/);
@@ -118,9 +121,15 @@ describe("standalone product", () => {
     assert.match(ui, /全部应用/);
     assert.match(ui, /person-who/);
     assert.match(ui, /person-actions/);
+    assert.match(ui, /踢出去/);
+    assert.match(ui, /data-kick/);
+    assert.match(ui, /occupancy/);
+    assert.match(ui, /\/api\/admin\/users\/\$\{id\}\/kick/);
     const css = readFileSync(resolve(root, "gateway/web/app.css"), "utf8");
-    assert.match(css, /grid-template-columns: minmax\(148px, 200px\) minmax\(0, 1fr\) 92px/);
+    assert.match(css, /grid-template-columns: minmax\(148px, 200px\) minmax\(0, 1fr\) auto/);
     assert.match(css, /\.person-actions/);
+    assert.match(css, /\.chip\.live/);
+    assert.match(css, /\.m-kick/);
     const clipd = readFileSync(resolve(root, "docker/clipd.py"), "utf8");
     assert.match(clipd, /xclip/);
     assert.match(clipd, /image\//);

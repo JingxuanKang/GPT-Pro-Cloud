@@ -66,6 +66,11 @@ describe("users + presence", () => {
       p.list("a", 1000).map((x) => x.username).sort(),
       ["ada", "bob"],
     );
+    assert.deepEqual(
+      p.list("a", 1000).map((x) => x.id).sort(),
+      ["1", "2"],
+    );
+    assert.deepEqual(p.desksOf("1", 1000), ["a"]);
     assert.equal(p.list("a", 1000 + 30_000).length, 0);
   });
 

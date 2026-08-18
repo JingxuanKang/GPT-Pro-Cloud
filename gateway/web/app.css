@@ -359,6 +359,19 @@ button { cursor: pointer; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.m-kick {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  padding: 0;
+  margin-left: 2px;
+  font-size: 12px;
+  font-weight: 550;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+.m-kick:hover { color: var(--danger); }
 .m-go {
   margin-left: auto;
   display: inline-flex;
@@ -449,7 +462,7 @@ button { cursor: pointer; }
 .people { display: flex; flex-direction: column; }
 .person {
   display: grid;
-  grid-template-columns: minmax(148px, 200px) minmax(0, 1fr) 92px;
+  grid-template-columns: minmax(148px, 200px) minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 16px;
   row-gap: 8px;
@@ -500,6 +513,11 @@ button { cursor: pointer; }
   font-weight: 500;
   color: var(--ink-2);
   white-space: nowrap;
+}
+.chip.live {
+  color: var(--green);
+  border-color: rgba(23, 143, 95, 0.28);
+  background: rgba(23, 143, 95, 0.07);
 }
 button.chip {
   appearance: none;
@@ -820,7 +838,7 @@ button.chip:hover {
   .page-head.split { flex-wrap: wrap; }
   .machines { grid-template-columns: 1fr; }
   .access { display: none; }
-  .person { grid-template-columns: minmax(0, 1fr) 92px; }
+  .person { grid-template-columns: minmax(0, 1fr) auto; }
   .chrome { grid-template-columns: auto 1fr auto; }
   .chrome-mid { justify-self: start; }
   .who { display: none; }

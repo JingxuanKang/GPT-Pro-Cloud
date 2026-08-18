@@ -80,7 +80,8 @@ Members are managed on the **Team** page, which only the administrator sees.
 | Add a member | Invite them, then assign which accounts they may open |
 | Rotate a credential | Reset that member's password; their sessions are revoked |
 | Remove access | Disable or delete the member; live sessions drop immediately |
-| See who is using what | Machine cards show live presence per account |
+| See who is using what | Machine cards and the Team page show live presence per account |
+| Kick someone off a desk | On Team or a live home card, **踢出去** revokes their login and drops the desktop; they sign in again. The member stays |
 
 Passwords are stored as per-user salted scrypt hashes. Sign-in is rate limited per `ip|username` (10 attempts per 15 minutes), and sessions survive a restart.
 

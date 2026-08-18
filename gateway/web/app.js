@@ -10,7 +10,14 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "出了点问题，请再试一次");
+  if (!res.ok) {
+    if (res.status === 401 && state.me && path !== "/api/login" && path !== "/api/setup") {
+      state.me = null;
+      state.boot = false;
+      setHash("/login");
+    }
+    throw new Error(data.error || "出了点问题，请再试一次");
+  }
   return data;
 }
 
@@ -40,6 +47,19 @@ function setHash(path) {
 
 function people(id) {
   return state.presence[id] || [];
+}
+
+function occupancy(user) {
+  if (!user) return [];
+  const ids = [];
+  for (const [deskId, vs] of Object.entries(state.presence || {})) {
+    if ((vs || []).some((v) => v.id === user.id || v.username === user.username)) ids.push(deskId);
+  }
+  return ids;
+}
+
+function kickBtn(id, name, cls = "text-btn") {
+  return `<button type="button" class="${cls}" data-kick="${esc(id)}" data-kick-name="${esc(name)}">踢出去</button>`;
 }
 
 function deskName(id) {
@@ -166,8 +186,14 @@ function renderHome() {
         .map((v) => av(v.username, "av mini"))
         .join("");
       const names = vs.map((v) => v.username).join("、");
+      const kicks = isAdmin
+        ? vs
+            .filter((v) => v.id && v.id !== state.me?.id)
+            .map((v) => kickBtn(v.id, v.username, "m-kick"))
+            .join("")
+        : "";
       const users = live
-        ? `<span class="m-users"><span class="stack">${stack}</span><span>${esc(names)}</span></span>`
+        ? `<span class="m-users"><span class="stack">${stack}</span><span>${esc(names)}</span>${kicks}</span>`
         : `<span class="m-users"><span>无人使用</span></span>`;
       const pencil = isAdmin
         ? `<button type="button" class="m-rename" data-rename="${esc(d.id)}" aria-label="重命名">${ICO.pencil}</button>`
@@ -239,15 +265,21 @@ function renderAdmin() {
   const rows = state.users
     .map((u) => {
       const chips = (u.desks || []).map((id) => `<span class="chip">${esc(deskName(id))}</span>`).join("");
+      const on = occupancy(u);
+      const liveChip = on.length
+        ? `<span class="chip live">${esc(on.map(deskName).join("、"))} · 使用中</span>`
+        : "";
+      const kick = on.length && u.id !== state.me?.id ? kickBtn(u.id, u.username) : "";
       const actions =
         u.role === "admin"
-          ? ""
-          : `<button type="button" class="text-btn" data-manage="${esc(u.id)}">管理</button>
+          ? kick
+          : `${kick}<button type="button" class="text-btn" data-manage="${esc(u.id)}">管理</button>
              <button type="button" class="text-btn danger" data-del="${esc(u.id)}" data-name="${esc(u.username)}">移除</button>`;
       const role = u.role === "admin" ? "管理员" : "成员";
+      const where = on.length ? ` · 正在使用 ${esc(on.map(deskName).join("、"))}` : "";
       return `<article class="person ${u.disabled ? "off" : ""}">
-        <div class="person-who">${av(u.username)}<div class="person-id"><b>${esc(u.username)}</b><span>${role}${u.disabled ? ` · <i class="off-note">已停用</i>` : ""}</span></div></div>
-        <div class="access">${chips || `<span class="none">未分配账号</span>`}</div>
+        <div class="person-who">${av(u.username)}<div class="person-id"><b>${esc(u.username)}</b><span>${role}${where}${u.disabled ? ` · <i class="off-note">已停用</i>` : ""}</span></div></div>
+        <div class="access">${liveChip}${chips || (liveChip ? "" : `<span class="none">未分配账号</span>`)}</div>
         <div class="person-actions">${actions}</div>
       </article>`;
     })
@@ -306,7 +338,7 @@ function renderAdmin() {
     <header class="page-head split">
       <div>
         <h1 class="display">团队</h1>
-        <p class="hint">管理谁可以登录，以及能使用哪些 ChatGPT 账号。</p>
+        <p class="hint">管理谁可以登录、能用哪些账号。占用桌面的成员可以踢出去。</p>
       </div>
       <button type="button" class="btn" id="add-user">邀请成员</button>
     </header>
@@ -621,6 +653,11 @@ function bindDesk() {
     if (state.view !== "desk" || !state.deskId) return;
     try {
       const r = await fetch(`/api/desks/${state.deskId}/peek`, { credentials: "same-origin" });
+      if (r.status === 401 && state.me) {
+        state.me = null;
+        setHash("/login");
+        return;
+      }
       if (!r.ok) return;
       const mime = r.headers.get("content-type") || "";
       if (!mime.startsWith("text/")) return;
@@ -846,11 +883,38 @@ async function openDesk(id) {
   setHash(`/desk/${id}`);
 }
 
+async function onKick(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  const id = btn.getAttribute("data-kick");
+  const name = btn.getAttribute("data-kick-name") || "这位成员";
+  if (!id) return;
+  if (!confirm(`确定把 ${name} 踢下桌面？对方需要重新登录。`)) return;
+  try {
+    await api(`/api/admin/users/${id}/kick`, { method: "POST" });
+    toast(`已断开 ${name}`);
+    await refresh();
+  } catch (err) {
+    toast(err.message || "没踢出去");
+  }
+}
+
+function bindKick() {
+  document.querySelectorAll("[data-kick]").forEach((btn) => {
+    btn.onclick = onKick;
+  });
+}
+
 function bind() {
   const logout = $("#logout");
   if (logout) logout.onclick = onLogout;
+  bindKick();
   document.querySelectorAll("[data-open]").forEach((btn) => {
-    btn.onclick = () => openDesk(btn.getAttribute("data-open"));
+    btn.onclick = (e) => {
+      if (e.target.closest("[data-kick]")) return;
+      openDesk(btn.getAttribute("data-open"));
+    };
     btn.onkeydown = (e) => {
       if (e.key === "Enter" && e.target === btn) openDesk(btn.getAttribute("data-open"));
     };
