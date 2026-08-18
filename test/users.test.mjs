@@ -124,6 +124,34 @@ describe("users + presence", () => {
     assert.throws(() => store.setDeskProxy("zz", "http://x:1"), /账号不存在/);
   });
 
+  it("remembers saved proxies and applies one to every desk", () => {
+    store.setDeskProxy("a", "http://127.0.0.1:7890");
+    store.setDeskProxy("b", "socks5://10.0.0.2:1080");
+    assert.deepEqual(store.proxyPresets(), ["socks5://10.0.0.2:1080", "http://127.0.0.1:7890"]);
+    const all = store.setAllDeskProxies("http://127.0.0.1:7890");
+    assert.equal(all, "http://127.0.0.1:7890");
+    assert.equal(store.deskProxyOf("a"), "http://127.0.0.1:7890");
+    assert.equal(store.deskProxyOf("b"), "http://127.0.0.1:7890");
+    assert.deepEqual(store.proxyPresets(), ["http://127.0.0.1:7890", "socks5://10.0.0.2:1080"]);
+    store.setAllDeskProxies("");
+    assert.equal(store.deskProxyOf("a"), "");
+    assert.equal(store.deskProxyOf("b"), "");
+    assert.ok(store.proxyPresets().includes("socks5://10.0.0.2:1080"));
+    assert.throws(() => store.setAllDeskProxies("ftp://x"), /代理格式/);
+  });
+
+  it("reloads proxy presets from users.json and hydrates from deskProxies", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gpc-proxy-"));
+    const file = join(dir, "users.json");
+    const a = createUserStore({ file, adminUser: "admin", adminPassword: "admin-secret", deskIds: ["a", "b"] });
+    a.setDeskProxy("a", "http://10.0.0.8:7890");
+    a.setAllDeskProxies("socks5://10.0.0.9:1080");
+    const b = createUserStore({ file, adminUser: "admin", adminPassword: "admin-secret", deskIds: ["a", "b"] });
+    assert.equal(b.deskProxyOf("a"), "socks5://10.0.0.9:1080");
+    assert.equal(b.deskProxyOf("b"), "socks5://10.0.0.9:1080");
+    assert.deepEqual(b.proxyPresets(), ["socks5://10.0.0.9:1080", "http://10.0.0.8:7890"]);
+  });
+
   it("persists an extra desk across reload and grants it to admin", () => {
     const dir = mkdtempSync(join(tmpdir(), "gpc-desk-"));
     const file = join(dir, "users.json");
@@ -147,6 +175,9 @@ describe("users + presence", () => {
     assert.ok(b.canOpen(b.login("admin", "admin-secret"), "c"));
     assert.throws(() => a.addDesk("c", "重复"), /已存在/);
     assert.throws(() => a.addDesk("Bad_ID", "x"), /不合法/);
+    a.setAllDeskProxies("http://127.0.0.1:7890");
+    assert.equal(a.deskProxyOf("c"), "http://127.0.0.1:7890");
+    assert.equal(a.deskProxyOf("a"), "http://127.0.0.1:7890");
   });
 
   it("clears a user from every desk", () => {

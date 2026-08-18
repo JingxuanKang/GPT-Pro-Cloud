@@ -105,10 +105,12 @@ Everything lives in `.env` — the commented [`.env.example`](.env.example) is t
 | `AUTH_PASSWORD` | Optional: pre-seed the administrator password; leave empty to use the first-visit wizard |
 | `INSTANCES` | Built-in compose seats (`a,b`). Extra desks are added in the panel |
 | `BIND_ADDR` | Address the gateway publishes on; `127.0.0.1` when tunneling, LAN or VPN address on a private network |
-| `PROXY_URL_A`, `PROXY_URL_B` | Default per-account proxy; edits on the Settings page take precedence and apply immediately |
+| `PROXY_URL_A`, `PROXY_URL_B` | Default per-account proxy; Settings (per desk or Apply to all) take precedence and apply immediately |
 | `PROXY_URL` | Default proxy shared by every account |
 
 A proxy is only needed when the server cannot reach ChatGPT directly (for example, hosts in mainland China); leave it empty otherwise. The prerequisite is an `http://` / `https://` / `socks5://` endpoint reachable from the server — for a proxy client running on the host, a loopback address like `http://127.0.0.1:7890` works and is rewritten to a container-reachable one automatically.
+
+On **Settings**, **Apply to all** writes the same address to every ChatGPT desk and pushes it live the same way as saving one row (clipd / `--proxy-server`, Chromium restarts). Addresses you have saved stay as chips so you can pick one again without retyping.
 
 ## Architecture
 

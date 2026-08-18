@@ -448,24 +448,47 @@ button { cursor: pointer; }
 .switch-row input:disabled { opacity: 0.45; }
 .people { display: flex; flex-direction: column; }
 .person {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(148px, 200px) minmax(0, 1fr) 92px;
   align-items: center;
-  gap: 14px;
+  column-gap: 16px;
+  row-gap: 8px;
   padding: 14px 20px;
 }
 .person + .person { border-top: 1px solid var(--line); }
+.person-who {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
 .person .av { width: 34px; height: 34px; font-size: 12.5px; }
-.person-id { min-width: 0; flex: 1; }
-.person-id b { display: block; font-size: 14px; font-weight: 600; }
+.person-id { min-width: 0; }
+.person-id b {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .person-id span { display: block; color: var(--mute); font-size: 12.5px; }
 .access {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  align-items: center;
   gap: 6px;
-  flex: 0 1 auto;
+  min-width: 0;
 }
 .access .none { color: var(--mute); font-size: 13px; }
+.person-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
 .chip {
   display: inline-flex;
   align-items: center;
@@ -477,6 +500,19 @@ button { cursor: pointer; }
   font-weight: 500;
   color: var(--ink-2);
   white-space: nowrap;
+}
+button.chip {
+  appearance: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  cursor: pointer;
+}
+button.chip:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+  background: var(--tile);
 }
 .person .text-btn { flex: 0 0 auto; }
 .person.off .av, .person.off .person-id b, .person.off .access { opacity: 0.45; }
@@ -505,6 +541,12 @@ button { cursor: pointer; }
   border-radius: 5px;
   padding: 1px 5px;
 }
+.proxy-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 20px 2px;
+}
 .proxies { padding-bottom: 6px; }
 .proxy-row {
   display: flex;
@@ -513,6 +555,10 @@ button { cursor: pointer; }
   padding: 12px 20px;
 }
 .proxy-row + .proxy-row { border-top: 1px solid var(--line); }
+.proxy-row.all {
+  border-bottom: 1px solid var(--line);
+  background: var(--tile);
+}
 .proxy-id { flex: 0 0 148px; min-width: 0; }
 .proxy-id b {
   display: block;
@@ -774,6 +820,7 @@ button { cursor: pointer; }
   .page-head.split { flex-wrap: wrap; }
   .machines { grid-template-columns: 1fr; }
   .access { display: none; }
+  .person { grid-template-columns: minmax(0, 1fr) 92px; }
   .chrome { grid-template-columns: auto 1fr auto; }
   .chrome-mid { justify-self: start; }
   .who { display: none; }

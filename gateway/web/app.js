@@ -14,7 +14,7 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, view: "home", deskId: null, err: "", modal: false, manage: null, rename: null, create: false, setup: false, boot: true };
+const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, proxyPresets: [], view: "home", deskId: null, err: "", modal: false, manage: null, rename: null, create: false, setup: false, boot: true };
 
 function assistOn() {
   return !!state.settings?.assist;
@@ -246,10 +246,9 @@ function renderAdmin() {
              <button type="button" class="text-btn danger" data-del="${esc(u.id)}" data-name="${esc(u.username)}">移除</button>`;
       const role = u.role === "admin" ? "管理员" : "成员";
       return `<article class="person ${u.disabled ? "off" : ""}">
-        ${av(u.username)}
-        <div class="person-id"><b>${esc(u.username)}</b><span>${role}${u.disabled ? ` · <i class="off-note">已停用</i>` : ""}</span></div>
+        <div class="person-who">${av(u.username)}<div class="person-id"><b>${esc(u.username)}</b><span>${role}${u.disabled ? ` · <i class="off-note">已停用</i>` : ""}</span></div></div>
         <div class="access">${chips || `<span class="none">未分配账号</span>`}</div>
-        ${actions}
+        <div class="person-actions">${actions}</div>
       </article>`;
     })
     .join("");
@@ -317,9 +316,18 @@ function renderAdmin() {
   </div>${modal}${manageModal}`);
 }
 
+function sharedProxyValue() {
+  const vals = state.desks.map((d) => d.proxy || "");
+  if (vals.length && vals.every((v) => v === vals[0])) return vals[0];
+  return state.proxyPresets[0] || "";
+}
+
 function renderSettings() {
   if (state.me?.role !== "admin") return renderHome();
   const on = assistOn();
+  const presets = (state.proxyPresets || [])
+    .map((u) => `<button type="button" class="chip" data-proxy-pick="${esc(u)}" title="${esc(u)}">${esc(u)}</button>`)
+    .join("");
   const rows = state.desks
     .map(
       (d) => `<div class="proxy-row">
@@ -346,7 +354,13 @@ function renderSettings() {
     <section class="panel">
       <div class="panel-head">
         <b>出口代理</b>
-        <em>服务器能直连 ChatGPT（如海外机器）就不需要代理，留空即可；服务器在国内等无法直连的网络时必须配置。前置条件：一个服务器可达的 http:// / https:// / socks5:// 代理端点——宿主机上跑的代理客户端填 <code>http://127.0.0.1:7890</code> 这类地址即可，会自动改写为容器可达；也可以填远程代理。保存后该账号的浏览器会立即重启，黑屏几秒属正常；留空恢复服务器默认出口。</em>
+        <em>服务器能直连 ChatGPT（如海外机器）就不需要代理，留空即可；服务器在国内等无法直连的网络时必须配置。前置条件：一个服务器可达的 http:// / https:// / socks5:// 代理端点——宿主机上跑的代理客户端填 <code>http://127.0.0.1:7890</code> 这类地址即可，会自动改写为容器可达；也可以填远程代理。填一次后点「全部应用」会下发到每个 ChatGPT 账号，路径与逐行保存相同（立即重启该账号的浏览器）。保存过的地址会出现在上方，点一下就能再用。留空再应用则恢复服务器默认出口。</em>
+      </div>
+      ${presets ? `<div class="proxy-presets">${presets}</div>` : ""}
+      <div class="proxy-row all">
+        <div class="proxy-id"><b>全部账号</b></div>
+        <input class="proxy-input" id="proxy-all-input" value="${esc(sharedProxyValue())}" placeholder="应用到全部账号" autocomplete="off" spellcheck="false">
+        <button type="button" class="btn ghost" id="proxy-all">全部应用</button>
       </div>
       <div class="proxies">${rows}</div>
     </section>
@@ -1006,6 +1020,16 @@ function bind() {
       await refresh();
     };
   });
+  document.querySelectorAll("[data-proxy-pick]").forEach((btn) => {
+    btn.onclick = () => {
+      const url = btn.getAttribute("data-proxy-pick") || "";
+      const all = $("#proxy-all-input");
+      if (all) all.value = url;
+      document.querySelectorAll("[data-proxy-input]").forEach((input) => {
+        input.value = url;
+      });
+    };
+  });
   document.querySelectorAll("[data-proxy-save]").forEach((btn) => {
     btn.onclick = async () => {
       const id = btn.getAttribute("data-proxy-save");
@@ -1018,10 +1042,27 @@ function bind() {
         await refresh();
       } catch (err) {
         toast(err.message || "没保存成功");
-        btn.disabled = false;
+        if (String(err.message || "").includes("已保存")) await refresh();
+        else btn.disabled = false;
       }
     };
   });
+  const proxyAll = $("#proxy-all");
+  if (proxyAll)
+    proxyAll.onclick = async () => {
+      const input = $("#proxy-all-input");
+      if (!input) return;
+      proxyAll.disabled = true;
+      try {
+        await api("/api/admin/proxies", { method: "POST", body: { proxy: input.value } });
+        toast(input.value.trim() ? "已应用到全部账号，各浏览器正在重启" : "已恢复全部账号的默认出口，浏览器正在重启");
+        await refresh();
+      } catch (err) {
+        toast(err.message || "没保存成功");
+        if (String(err.message || "").includes("已保存")) await refresh();
+        else proxyAll.disabled = false;
+      }
+    };
   const assist = $("#assist-toggle");
   if (assist)
     assist.onchange = async () => {
@@ -1061,6 +1102,7 @@ async function refresh() {
   state.me = me.user;
   state.settings = me.settings || { assist: false };
   state.desks = desks.desks;
+  state.proxyPresets = desks.proxyPresets || [];
   state.presence = presence.presence || {};
   if (state.me.role === "admin") state.users = (await api("/api/admin/users")).users;
   state.boot = false;
