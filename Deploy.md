@@ -13,9 +13,27 @@
 
 ```bash
 cp .env.example .env
-# 必填 AUTH_PASSWORD；有公网 IP 的机器把 BIND_ADDR 设为内网 IP（如 Tailscale IP），不要 0.0.0.0
+# AUTH_PASSWORD 可选：留空则首次访问走向导创建管理员
+# BIND_ADDR：内网填局域网/VPN 地址；走 Cloudflare Tunnel 时填 127.0.0.1
 ./scripts/up.sh
 ```
+
+打开 `http://127.0.0.1:36090`（或内网地址）完成管理员。公网必须先有管理员再开隧道，见下方。
+
+## 公网：Cloudflare Tunnel
+
+顺序：启动 → 在本机或局域网建好管理员 → 再开隧道。对公网打开时必须是登录页，不能是首次访问向导。
+
+走隧道时 `BIND_ADDR=127.0.0.1`。若面板已经绑在局域网/VPN 地址上，改完再 `docker compose up -d`。
+
+```bash
+# 临时域名，不需要自己的域名
+cloudflared tunnel --url http://127.0.0.1:36090
+```
+
+要固定主机名，把 named tunnel 指到同一个本地端口（需要 Cloudflare 上有域名）。
+
+把打印出的 `https://` 地址发给队友。部署者用已建好的管理员登录；成员用「团队」页创建的网关用户名/密码，不是 ChatGPT 密码。限流与审计会读 `CF-Connecting-IP`。
 
 ## 健康检查
 
