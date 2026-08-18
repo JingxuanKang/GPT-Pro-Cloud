@@ -30,7 +30,7 @@ GPT-Pro Cloud 是一套 Docker 网关加浏览器桌面，把已登录的 ChatGP
 运行环境：Docker Compose（Linux 服务器；macOS / Windows 用 Docker Desktop），每个账号约 1 GB 内存。
 
 ```bash
-git clone https://github.com/JingxuanKang/gpt-pro-cloud.git
+git clone https://github.com/JingxuanKang/GPT-Pro-Cloud.git
 cd gpt-pro-cloud
 cp .env.example .env
 ./scripts/up.sh

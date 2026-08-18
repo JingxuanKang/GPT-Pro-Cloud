@@ -30,7 +30,7 @@ Each account gets its own Chromium with a persistent profile. One gateway serves
 Runs on Docker Compose (a Linux server; Docker Desktop on macOS or Windows), roughly 1 GB of RAM per account.
 
 ```bash
-git clone https://github.com/JingxuanKang/gpt-pro-cloud.git
+git clone https://github.com/JingxuanKang/GPT-Pro-Cloud.git
 cd gpt-pro-cloud
 cp .env.example .env
 ./scripts/up.sh
