@@ -459,10 +459,27 @@ button { cursor: pointer; }
 .switch-row input:checked { background: var(--green); }
 .switch-row input:checked::after { transform: translateX(17px); }
 .switch-row input:disabled { opacity: 0.45; }
+.assist-note {
+  padding: 0 20px 18px;
+  border-top: 1px solid var(--line);
+}
+.assist-note > b {
+  display: block;
+  margin-top: 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.assist-note p {
+  margin: 8px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.assist-note p b { color: var(--ink); font-weight: 600; }
 .people { display: flex; flex-direction: column; }
 .person {
   display: grid;
-  grid-template-columns: minmax(148px, 200px) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(148px, 200px) minmax(0, 1fr) 92px;
   align-items: center;
   column-gap: 16px;
   row-gap: 8px;
@@ -838,7 +855,7 @@ button.chip:hover {
   .page-head.split { flex-wrap: wrap; }
   .machines { grid-template-columns: 1fr; }
   .access { display: none; }
-  .person { grid-template-columns: minmax(0, 1fr) auto; }
+  .person { grid-template-columns: minmax(0, 1fr) 92px; }
   .chrome { grid-template-columns: auto 1fr auto; }
   .chrome-mid { justify-self: start; }
   .who { display: none; }

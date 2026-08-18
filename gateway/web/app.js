@@ -58,8 +58,8 @@ function occupancy(user) {
   return ids;
 }
 
-function kickBtn(id, name, cls = "text-btn") {
-  return `<button type="button" class="${cls}" data-kick="${esc(id)}" data-kick-name="${esc(name)}">踢出去</button>`;
+function kickBtn(id, name) {
+  return `<button type="button" class="m-kick" data-kick="${esc(id)}" data-kick-name="${esc(name)}">断开</button>`;
 }
 
 function deskName(id) {
@@ -189,7 +189,7 @@ function renderHome() {
       const kicks = isAdmin
         ? vs
             .filter((v) => v.id && v.id !== state.me?.id)
-            .map((v) => kickBtn(v.id, v.username, "m-kick"))
+            .map((v) => kickBtn(v.id, v.username))
             .join("")
         : "";
       const users = live
@@ -269,11 +269,10 @@ function renderAdmin() {
       const liveChip = on.length
         ? `<span class="chip live">${esc(on.map(deskName).join("、"))} · 使用中</span>`
         : "";
-      const kick = on.length && u.id !== state.me?.id ? kickBtn(u.id, u.username) : "";
       const actions =
         u.role === "admin"
-          ? kick
-          : `${kick}<button type="button" class="text-btn" data-manage="${esc(u.id)}">管理</button>
+          ? ""
+          : `<button type="button" class="text-btn" data-manage="${esc(u.id)}">管理</button>
              <button type="button" class="text-btn danger" data-del="${esc(u.id)}" data-name="${esc(u.username)}">移除</button>`;
       const role = u.role === "admin" ? "管理员" : "成员";
       const where = on.length ? ` · 正在使用 ${esc(on.map(deskName).join("、"))}` : "";
@@ -338,7 +337,7 @@ function renderAdmin() {
     <header class="page-head split">
       <div>
         <h1 class="display">团队</h1>
-        <p class="hint">管理谁可以登录、能用哪些账号。占用桌面的成员可以踢出去。</p>
+        <p class="hint">管理谁可以登录、能用哪些账号。谁在使用某台桌面，请到首页账号卡片上断开。</p>
       </div>
       <button type="button" class="btn" id="add-user">邀请成员</button>
     </header>
@@ -382,6 +381,12 @@ function renderSettings() {
         </span>
         <input type="checkbox" id="assist-toggle" ${on ? "checked" : ""}>
       </label>
+      <div class="assist-note">
+        <b>说明</b>
+        <p><b>分享</b> — 关掉时，在 ChatGPT 页面里自己点 Share 并复制，链接会经剪贴板落到本机。打开后，顶栏多一个「分享」按钮，由网关代点，链接直接给你。</p>
+        <p><b>记忆隔离</b> — 打开后，成员第一次进入某个账号，会自动进入（或创建）一个以其用户名命名的 ChatGPT 项目，并设为仅项目内记忆。对话不读写账号的全局记忆。</p>
+        <p><b>案例</b> — ada 和 bob 共用「老板号」。ada 第一次打开时进入项目「ada」，之后她的对话只写进这个项目；bob 进的是「bob」。两边互不可见，也不会把上下文留给下一个用这个席位的人。</p>
+      </div>
     </section>
     <section class="panel">
       <div class="panel-head">
@@ -890,13 +895,13 @@ async function onKick(e) {
   const id = btn.getAttribute("data-kick");
   const name = btn.getAttribute("data-kick-name") || "这位成员";
   if (!id) return;
-  if (!confirm(`确定把 ${name} 踢下桌面？对方需要重新登录。`)) return;
+  if (!confirm(`确定断开 ${name} 的会话？对方需要重新登录。`)) return;
   try {
     await api(`/api/admin/users/${id}/kick`, { method: "POST" });
     toast(`已断开 ${name}`);
     await refresh();
   } catch (err) {
-    toast(err.message || "没踢出去");
+    toast(err.message || "未能断开");
   }
 }
 
