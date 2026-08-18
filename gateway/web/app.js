@@ -27,7 +27,7 @@ function route() {
     state.deskId = h.slice("/desk/".length);
     return;
   }
-  state.view = h === "/admin" ? "admin" : h === "/login" ? "login" : "home";
+  state.view = h === "/admin" ? "admin" : h === "/settings" ? "settings" : h === "/login" ? "login" : "home";
 }
 
 function setHash(path) {
@@ -134,7 +134,9 @@ async function onSetup(e) {
 function shell(inner) {
   const team =
     state.me?.role === "admin"
-      ? `<a href="#/admin" class="top-link ${state.view === "admin" ? "on" : ""}">团队</a><span class="top-sep"></span>`
+      ? `<a href="#/admin" class="top-link ${state.view === "admin" ? "on" : ""}">团队</a>
+         <a href="#/settings" class="top-link ${state.view === "settings" ? "on" : ""}">设置</a>
+         <span class="top-sep"></span>`
       : "";
   return `<div class="app">
     <header class="top">
@@ -272,7 +274,6 @@ function renderAdmin() {
         </form>
       </div>`
     : "";
-  const on = assistOn();
   return shell(`<div class="narrow">
     <header class="page-head split">
       <div>
@@ -280,6 +281,29 @@ function renderAdmin() {
         <p class="hint">管理谁可以登录，以及能使用哪些 ChatGPT 账号。</p>
       </div>
       <button type="button" class="btn" id="add-user">邀请成员</button>
+    </header>
+    <section class="panel">
+      <div class="people">${rows}</div>
+    </section>
+  </div>${modal}${manageModal}`);
+}
+
+function renderSettings() {
+  if (state.me?.role !== "admin") return renderHome();
+  const on = assistOn();
+  const rows = state.desks
+    .map(
+      (d) => `<div class="proxy-row">
+        <div class="proxy-id"><b>${esc(d.name)}</b><span>desk-${esc(d.id)}</span></div>
+        <input class="proxy-input" data-proxy-input="${esc(d.id)}" value="${esc(d.proxy || "")}" placeholder="默认出口" autocomplete="off" spellcheck="false">
+        <button type="button" class="btn ghost" data-proxy-save="${esc(d.id)}">保存</button>
+      </div>`,
+    )
+    .join("");
+  return shell(`<div class="narrow">
+    <header class="page-head">
+      <h1 class="display">设置</h1>
+      <p class="hint">对整个部署生效，仅管理员可见。</p>
     </header>
     <section class="panel">
       <label class="switch-row">
@@ -291,9 +315,13 @@ function renderAdmin() {
       </label>
     </section>
     <section class="panel">
-      <div class="people">${rows}</div>
+      <div class="panel-head">
+        <b>出口代理</b>
+        <em>每个账号可单独指定出口，支持 http:// / https:// / socks5://，留空恢复服务器默认。保存后该账号的浏览器会立即用新代理重启，页面黑屏几秒属正常。</em>
+      </div>
+      <div class="proxies">${rows}</div>
     </section>
-  </div>${modal}${manageModal}`);
+  </div>`);
 }
 
 const isMac = /Mac|iPhone|iPad/.test(String(navigator.userAgent || navigator.platform || ""));
@@ -433,7 +461,7 @@ function render() {
     bindDesk();
     return;
   }
-  root.innerHTML = state.view === "admin" ? renderAdmin() : renderHome();
+  root.innerHTML = state.view === "admin" ? renderAdmin() : state.view === "settings" ? renderSettings() : renderHome();
   bind();
 }
 
@@ -895,6 +923,22 @@ function bind() {
       if (!confirm(`确定移除 ${name}？对方将无法再登录。`)) return;
       await api(`/api/admin/users/${btn.getAttribute("data-del")}`, { method: "DELETE" });
       await refresh();
+    };
+  });
+  document.querySelectorAll("[data-proxy-save]").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.getAttribute("data-proxy-save");
+      const input = document.querySelector(`[data-proxy-input="${CSS.escape(id)}"]`);
+      if (!input) return;
+      btn.disabled = true;
+      try {
+        await api(`/api/admin/desks/${id}`, { method: "PATCH", body: { proxy: input.value } });
+        toast(input.value.trim() ? "代理已更新，该账号浏览器正在重启" : "已恢复默认出口，该账号浏览器正在重启");
+        await refresh();
+      } catch (err) {
+        toast(err.message || "没保存成功");
+        btn.disabled = false;
+      }
     };
   });
   const assist = $("#assist-toggle");

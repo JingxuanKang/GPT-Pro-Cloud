@@ -244,9 +244,11 @@ async function handleApi(req, res, url, sess) {
     return json(res, 200, { settings: users.setSettings(body) });
   }
   if (url.pathname === "/api/desks") {
+    const isAdmin = sess.user.role === "admin";
     const desks = INSTANCES.filter((d) => users.canOpen(sess.user, d.id)).map((d) => ({
       id: d.id,
       name: users.deskNameOf(d.id) || d.name,
+      ...(isAdmin ? { proxy: users.deskProxyOf(d.id) } : {}),
     }));
     return json(res, 200, { desks });
   }
@@ -256,8 +258,23 @@ async function handleApi(req, res, url, sess) {
     if (!BY_ID.has(rename[1])) return json(res, 404, { error: "账号不存在" });
     try {
       const body = await readBody(req);
-      const name = users.renameDesk(rename[1], body.name);
-      return json(res, 200, { ok: true, name: name || BY_ID.get(rename[1]).name });
+      const out = { ok: true };
+      if ("name" in body) out.name = users.renameDesk(rename[1], body.name) || BY_ID.get(rename[1]).name;
+      if ("proxy" in body) {
+        const proxy = users.setDeskProxy(rename[1], body.proxy);
+        try {
+          const r = await fetch(`http://desktop-${rename[1]}:18790/proxy`, {
+            method: "POST",
+            headers: { "content-type": "text/plain; charset=utf-8" },
+            body: proxy,
+          });
+          if (!r.ok) throw new Error();
+        } catch {
+          return json(res, 502, { error: "代理已保存，但账号容器暂时不可达，重启该容器后生效" });
+        }
+        out.proxy = proxy;
+      }
+      return json(res, 200, out);
     } catch (e) {
       return json(res, 400, { error: e.message });
     }

@@ -86,8 +86,8 @@ Everything lives in `.env` — the commented [`.env.example`](.env.example) is t
 | `AUTH_PASSWORD` | Optional: pre-seed the administrator password; leave empty to use the first-visit wizard |
 | `INSTANCES` | Comma-separated desktop ids to show as cards |
 | `BIND_ADDR` | Address the gateway publishes on; use the VPN address on public hosts |
-| `PROXY_URL_A`, `PROXY_URL_B` | Outbound proxy per account |
-| `PROXY_URL` | One proxy for every account |
+| `PROXY_URL_A`, `PROXY_URL_B` | Default per-account proxy; edits on the Settings page take precedence and apply immediately |
+| `PROXY_URL` | Default proxy shared by every account |
 
 ## Architecture
 

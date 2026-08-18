@@ -114,6 +114,16 @@ describe("users + presence", () => {
     assert.ok(s.login("boss", "secret6"));
   });
 
+  it("stores a per-desk proxy and validates the scheme", () => {
+    assert.equal(store.deskProxyOf("a"), "");
+    store.setDeskProxy("a", "socks5://10.0.0.2:1080");
+    assert.equal(store.deskProxyOf("a"), "socks5://10.0.0.2:1080");
+    store.setDeskProxy("a", "");
+    assert.equal(store.deskProxyOf("a"), "");
+    assert.throws(() => store.setDeskProxy("a", "ftp://x"), /代理格式/);
+    assert.throws(() => store.setDeskProxy("zz", "http://x:1"), /账号不存在/);
+  });
+
   it("clears a user from every desk", () => {
     const p = createPresence();
     const ada = { id: "1", username: "ada" };

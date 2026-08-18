@@ -86,8 +86,8 @@ cp .env.example .env
 | `AUTH_PASSWORD` | 可选：预设管理员密码，留空走首次访问向导 |
 | `INSTANCES` | 逗号分隔的桌面 id，决定显示哪些卡片 |
 | `BIND_ADDR` | 网关监听地址；公网机器填 VPN 地址 |
-| `PROXY_URL_A`、`PROXY_URL_B` | 按账号单独指定出口代理 |
-| `PROXY_URL` | 所有账号共用一个代理 |
+| `PROXY_URL_A`、`PROXY_URL_B` | 按账号出口代理的默认值；「设置」页里的修改优先且立即生效 |
+| `PROXY_URL` | 所有账号共用的默认代理 |
 
 ## 架构
 

@@ -30,6 +30,7 @@ describe("standalone product", () => {
     assert.match(start, /--test-type/);
     assert.match(start, /--user-data-dir=\/config\/chromium/);
     assert.match(start, /--proxy-server=/);
+    assert.match(start, /gpc-proxy-override/);
     assert.match(start, /remote-debugging-port=9222/);
     assert.match(start, /remote-debugging-address=127.0.0.1/);
     assert.doesNotMatch(start, /remote-debugging-address=0.0.0.0/);
@@ -95,9 +96,14 @@ describe("standalone product", () => {
     assert.match(gw, /\/api\/setup/);
     assert.match(gw, /hasAdmin/);
     assert.match(ui, /创建管理员/);
+    assert.match(gw, /setDeskProxy/);
+    assert.match(ui, /#\/settings/);
+    assert.match(ui, /data-proxy-save/);
     const clipd = readFileSync(resolve(root, "docker/clipd.py"), "utf8");
     assert.match(clipd, /xclip/);
     assert.match(clipd, /image\//);
+    assert.match(clipd, /\/proxy/);
+    assert.match(clipd, /gpc-proxy-override/);
     const chrome = readFileSync(resolve(root, "lib/chrome.mjs"), "utf8");
     assert.match(chrome, /waitForDesk/);
     assert.match(chrome, /projectOnboardScript/);

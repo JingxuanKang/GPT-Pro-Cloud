@@ -118,6 +118,34 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self) -> None:
+        if self.path.rstrip("/") == "/proxy":
+            # 面板按账号改代理：写 override 文件（回环改写成 host.docker.internal），
+            # 杀掉 Chromium 让 autostart 用新代理重启。空 body = 强制直连。
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                n = 0
+            if n > 512:
+                self.send_response(413)
+                self.end_headers()
+                return
+            raw = self.rfile.read(n).decode("utf-8", "replace").strip() if n else ""
+            for loop in ("127.0.0.1", "localhost", "[::1]"):
+                raw = raw.replace(loop, "host.docker.internal")
+            path = "/config/.gpc-proxy-override"
+            if raw:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(raw + "\n")
+            else:
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+            print(f"gpc-clipd proxy override={raw or '(default)'}", flush=True)
+            subprocess.run(["pkill", "-f", "/usr/bin/chromium"], check=False, timeout=5)
+            self.send_response(204)
+            self.end_headers()
+            return
         if self.path.rstrip("/") == "/grab":
             mime, data = grab()
             print(f"gpc-clipd grab mime={mime} bytes={len(data)}", flush=True)

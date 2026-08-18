@@ -484,6 +484,53 @@ button { cursor: pointer; }
   margin-bottom: 4px;
 }
 
+.panel-head { padding: 18px 20px 4px; }
+.panel-head b { display: block; font-size: 14.5px; font-weight: 600; }
+.panel-head em {
+  display: block;
+  margin-top: 3px;
+  font-style: normal;
+  color: var(--mute);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.proxies { padding-bottom: 6px; }
+.proxy-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+}
+.proxy-row + .proxy-row { border-top: 1px solid var(--line); }
+.proxy-id { flex: 0 0 148px; min-width: 0; }
+.proxy-id b {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proxy-id span { display: block; font-family: var(--mono); font-size: 11.5px; color: var(--mute); }
+.proxy-input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  padding: 0 12px;
+  outline: none;
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 13px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.proxy-input:focus {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(27, 26, 23, 0.08);
+}
+.proxy-input::placeholder { font-family: var(--sans); color: var(--mute); }
+
 /* Modal */
 .mask {
   position: fixed;
