@@ -326,13 +326,6 @@ button { cursor: pointer; }
 .machine:hover .m-rename, .m-rename:focus-visible { opacity: 1; }
 .m-rename:hover { color: var(--ink); background: var(--hover); }
 .m-rename svg { width: 14px; height: 14px; }
-.m-id {
-  display: block;
-  margin-top: 3px;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--mute);
-}
 .m-foot {
   margin-top: auto;
   display: flex;
@@ -493,6 +486,13 @@ button { cursor: pointer; }
   color: var(--mute);
   font-size: 13px;
   line-height: 1.5;
+}
+.panel-head code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--tile);
+  border-radius: 5px;
+  padding: 1px 5px;
 }
 .proxies { padding-bottom: 6px; }
 .proxy-row {

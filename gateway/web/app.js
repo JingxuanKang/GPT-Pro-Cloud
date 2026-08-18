@@ -178,7 +178,6 @@ function renderHome() {
             <span class="badge ${live ? "live" : ""}"><i class="status-dot"></i>${live ? "使用中" : "空闲"}</span>
           </span>
           <span class="m-name">${esc(d.name)}${pencil}</span>
-          <span class="m-id">desk-${esc(d.id)}</span>
         </span>
         <span class="m-foot">
           ${users}
@@ -317,7 +316,7 @@ function renderSettings() {
     <section class="panel">
       <div class="panel-head">
         <b>出口代理</b>
-        <em>每个账号可单独指定出口，支持 http:// / https:// / socks5://，留空恢复服务器默认。保存后该账号的浏览器会立即用新代理重启，页面黑屏几秒属正常。</em>
+        <em>服务器能直连 ChatGPT（如海外机器）就不需要代理，留空即可；服务器在国内等无法直连的网络时必须配置。前置条件：一个服务器可达的 http:// / https:// / socks5:// 代理端点——宿主机上跑的代理客户端填 <code>http://127.0.0.1:7890</code> 这类地址即可，会自动改写为容器可达；也可以填远程代理。保存后该账号的浏览器会立即重启，黑屏几秒属正常；留空恢复服务器默认出口。</em>
       </div>
       <div class="proxies">${rows}</div>
     </section>

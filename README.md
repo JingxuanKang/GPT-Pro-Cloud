@@ -89,6 +89,8 @@ Everything lives in `.env` — the commented [`.env.example`](.env.example) is t
 | `PROXY_URL_A`, `PROXY_URL_B` | Default per-account proxy; edits on the Settings page take precedence and apply immediately |
 | `PROXY_URL` | Default proxy shared by every account |
 
+A proxy is only needed when the server cannot reach ChatGPT directly (for example, hosts in mainland China); leave it empty otherwise. The prerequisite is an `http://` / `https://` / `socks5://` endpoint reachable from the server — for a proxy client running on the host, a loopback address like `http://127.0.0.1:7890` works and is rewritten to a container-reachable one automatically.
+
 ## Architecture
 
 ```
