@@ -36,13 +36,28 @@ cp .env.example .env
 ./scripts/up.sh
 ```
 
-Deploy inside a LAN or a VPN such as Tailscale. The panel speaks plain HTTP — see [Security](#security).
+Private access: a LAN or a VPN such as Tailscale (plain HTTP). Public access: a Cloudflare Tunnel after the administrator exists — [Public access](#public-access).
 
 ## Quick start
 
-Open `http://<host>:36090` — the first visit walks you through creating the administrator account (or pre-seed it with `AUTH_PASSWORD` in `.env` for automated deployments). Then open each account card once and log in to ChatGPT inside it; the profile survives restarts, so this is a one-time step per account.
+Open `http://127.0.0.1:36090` (or the LAN / VPN host) — the first visit walks you through creating the administrator account (or pre-seed it with `AUTH_PASSWORD` in `.env` for automated deployments). Then open each account card once and log in to ChatGPT inside it; the profile survives restarts, so this is a one-time step per account.
 
-After that, any device on the same network opens the same URL and lands in the signed-in session.
+After that, any device on the same private network opens the same URL and lands in the signed-in session. Finish the administrator on localhost or the LAN before starting a public tunnel — otherwise a stranger who opens the public URL could claim admin.
+
+## Public access
+
+HTTPS on the open internet is a Cloudflare Tunnel. The administrator must already exist (wizard or `AUTH_PASSWORD`) before the tunnel goes up. Opening the public URL must be the login page, not the first-visit wizard.
+
+Set `BIND_ADDR=127.0.0.1` in `.env` so the panel is not also published as plain HTTP on a public NIC, then:
+
+```bash
+# quick tunnel: no domain required
+cloudflared tunnel --url http://127.0.0.1:36090
+```
+
+Share the `https://` URL it prints. You sign in with the administrator you already created. Members use the gateway username and password from the Team page — not ChatGPT passwords.
+
+For a stable hostname, point a named tunnel at the same local port (that needs a domain on Cloudflare).
 
 ## Add an account
 
@@ -85,7 +100,7 @@ Everything lives in `.env` — the commented [`.env.example`](.env.example) is t
 | --- | --- |
 | `AUTH_PASSWORD` | Optional: pre-seed the administrator password; leave empty to use the first-visit wizard |
 | `INSTANCES` | Comma-separated desktop ids to show as cards |
-| `BIND_ADDR` | Address the gateway publishes on; use the VPN address on public hosts |
+| `BIND_ADDR` | Address the gateway publishes on; `127.0.0.1` when tunneling, LAN or VPN address on a private network |
 | `PROXY_URL_A`, `PROXY_URL_B` | Default per-account proxy; edits on the Settings page take precedence and apply immediately |
 | `PROXY_URL` | Default proxy shared by every account |
 
@@ -102,11 +117,11 @@ The gateway is the only published port. VNC and Chromium DevTools stay on the co
 
 ## Security
 
-The panel speaks plain HTTP. Everything, including the sign-in password, travels unencrypted, so this is safe only inside a LAN or a VPN. For access from the open internet, put an HTTPS reverse proxy such as Caddy or Nginx in front of the gateway.
+The panel speaks plain HTTP. Everything, including the sign-in password, travels unencrypted, so direct access is only for a LAN or a VPN. Public access is HTTPS via Cloudflare Tunnel — see [Public access](#public-access). When tunneling, set `BIND_ADDR=127.0.0.1`; on a private network on a public-IP host, bind the LAN or VPN address — never `0.0.0.0` on a public NIC.
 
-On a host with a public IP, set `BIND_ADDR` to the VPN address rather than `0.0.0.0`.
+The setup wizard only appears while no administrator exists. Finish it on localhost or the LAN, or pre-seed with `AUTH_PASSWORD`, before starting the tunnel.
 
-The setup wizard only appears while no administrator exists. Complete the first run inside your private network, or pre-seed the administrator with `AUTH_PASSWORD`, so an exposed entry cannot be claimed by a stranger.
+Rate limits and audit logs trust `CF-Connecting-IP` for requests that arrive through the tunnel.
 
 ## Development
 
