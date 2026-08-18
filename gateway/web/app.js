@@ -198,6 +198,9 @@ function renderHome() {
       const pencil = isAdmin
         ? `<button type="button" class="m-rename" data-rename="${esc(d.id)}" aria-label="重命名">${ICO.pencil}</button>`
         : "";
+      const del = isAdmin && d.extra
+        ? `<button type="button" class="m-kick" data-delete="${esc(d.id)}" data-delete-name="${esc(d.name)}" data-delete-live="${live ? "1" : ""}">删除</button>`
+        : "";
       return `<div class="machine" data-open="${esc(d.id)}" role="button" tabindex="0">
         <span class="m-body">
           <span class="m-head">
@@ -208,6 +211,7 @@ function renderHome() {
         </span>
         <span class="m-foot">
           ${users}
+          ${del}
           <span class="m-go">进入${ICO.arrow}</span>
         </span>
       </div>`;
@@ -386,7 +390,14 @@ function renderSettings() {
         <p><b>分享</b> — 关掉时，在 ChatGPT 页面里自己点 Share 并复制，链接会经剪贴板落到本机。打开后，顶栏多一个「分享」按钮，由网关代点，链接直接给你。</p>
         <p><b>记忆隔离</b> — 打开后，成员第一次进入某个账号，会自动进入（或创建）一个以其用户名命名的 ChatGPT 项目，并设为仅项目内记忆。对话不读写账号的全局记忆。</p>
         <p><b>案例</b> — ada 和 bob 共用「老板号」。ada 第一次打开时进入项目「ada」，之后她的对话只写进这个项目；bob 进的是「bob」。两边互不可见，也不会把上下文留给下一个用这个席位的人。</p>
-        <p><b>复制粘贴</b> — 桌面嵌在页面里，本机的 Cmd/Ctrl+C / V 不会直接穿过。贴进去：先在本机复制，点进桌面再按 Cmd/Ctrl+V。拷出来：在 ChatGPT 里选中文字或图，按 Cmd/Ctrl+C。浏览器可能询问剪贴板权限；局域网 HTTP 下常常写不进本机剪贴板——这时点顶栏那个格子（会显示刚记下的内容）。文字和截图都可以。不需要去找远端桌面里的剪贴板面板。</p>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <b>复制粘贴</b>
+        <em>桌面嵌在页面里，本机的 Cmd/Ctrl+C / V 不会直接穿过。贴进去：先在本机复制，点进桌面再按 Cmd/Ctrl+V。拷出来：在 ChatGPT 里选中文字或图，按 Cmd/Ctrl+C。浏览器可能询问剪贴板权限；局域网 HTTP 下常常写不进本机剪贴板——这时点顶栏那个格子（会显示刚记下的内容）。文字和截图都可以。不需要去找远端桌面里的剪贴板面板。</em>
+      </div>
+      <div class="clip-note">
         <p><b>案例</b> — ada 在笔记里复制「请总结上周纪要」，打开「老板号」，按 Cmd+V，输入框出现这句话。选中回复再按 Cmd+C；若提示「已记下」或本机还贴不出来，点一下顶栏格子。</p>
       </div>
     </section>
@@ -913,13 +924,36 @@ function bindKick() {
   });
 }
 
+async function onDeleteDesk(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  const id = btn.getAttribute("data-delete");
+  const name = btn.getAttribute("data-delete-name") || "这个账号";
+  if (!id) return;
+  const live = btn.getAttribute("data-delete-live") === "1";
+  const warn = live ? "当前有人正在使用，删除后对方会断开。" : "";
+  if (!confirm(`确定删除「${name}」？该桌面会被拆除，上面的 ChatGPT 登录态一并清除。${warn}`)) return;
+  try {
+    await api(`/api/admin/desks/${id}`, { method: "DELETE" });
+    toast(`已删除 ${name}`);
+    if (state.deskId === id) setHash("/");
+    await refresh();
+  } catch (err) {
+    toast(err.message || "未能删除");
+  }
+}
+
 function bind() {
   const logout = $("#logout");
   if (logout) logout.onclick = onLogout;
   bindKick();
+  document.querySelectorAll("[data-delete]").forEach((btn) => {
+    btn.onclick = onDeleteDesk;
+  });
   document.querySelectorAll("[data-open]").forEach((btn) => {
     btn.onclick = (e) => {
-      if (e.target.closest("[data-kick]")) return;
+      if (e.target.closest("[data-kick],[data-delete]")) return;
       openDesk(btn.getAttribute("data-open"));
     };
     btn.onkeydown = (e) => {

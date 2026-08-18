@@ -372,6 +372,14 @@ button { cursor: pointer; }
   cursor: pointer;
 }
 .m-kick:hover { color: var(--danger); }
+.clip-note { padding: 0 20px 18px; }
+.clip-note p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.clip-note p b { color: var(--ink); font-weight: 600; }
 .m-go {
   margin-left: auto;
   display: inline-flex;

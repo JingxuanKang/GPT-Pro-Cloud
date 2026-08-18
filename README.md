@@ -82,6 +82,7 @@ Members are managed on the **Team** page, which only the administrator sees.
 | Remove access | Disable or delete the member; live sessions drop immediately |
 | See who is using what | Machine cards show live presence per account; Team lists occupancy as information |
 | Disconnect a live seat | On a live account card, **断开** revokes that member's login and drops the desktop; they sign in again. The member stays |
+| Delete an extra account | On a panel-created card, **删除** stops the container and wipes `./data/<id>` so a re-add is clean. Built-in `a` / `b` stay |
 
 Passwords are stored as per-user salted scrypt hashes. Sign-in is rate limited per `ip|username` (10 attempts per 15 minutes), and sessions survive a restart.
 
