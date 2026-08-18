@@ -31,7 +31,7 @@ Runs on Docker Compose (a Linux server; Docker Desktop on macOS or Windows), rou
 
 ```bash
 git clone https://github.com/JingxuanKang/GPT-Pro-Cloud.git
-cd gpt-pro-cloud
+cd GPT-Pro-Cloud
 cp .env.example .env
 ./scripts/up.sh
 ```

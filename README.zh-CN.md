@@ -31,7 +31,7 @@ GPT-Pro Cloud 是一套 Docker 网关加浏览器桌面，把已登录的 ChatGP
 
 ```bash
 git clone https://github.com/JingxuanKang/GPT-Pro-Cloud.git
-cd gpt-pro-cloud
+cd GPT-Pro-Cloud
 cp .env.example .env
 ./scripts/up.sh
 ```
