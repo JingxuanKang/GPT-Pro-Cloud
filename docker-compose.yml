@@ -34,7 +34,7 @@ services:
     container_name: gpt-pro-cloud-gateway
     environment:
       - PORT=8080
-      - AUTH_PASSWORD=${AUTH_PASSWORD:?set AUTH_PASSWORD in .env}
+      - AUTH_PASSWORD=${AUTH_PASSWORD:-}
       - AUTH_USER=${AUTH_USER:-admin}
       - USERS_FILE=/data/users.json
       - INSTANCES=${INSTANCES:-a,b}

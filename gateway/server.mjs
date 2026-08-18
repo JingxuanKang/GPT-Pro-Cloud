@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { extname, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import httpProxy from "http-proxy";
-import { requirePasswordConfigured, createSessionToken, readSession, createLoginLimiter, createSessionStore } from "../lib/auth.mjs";
+import { createSessionToken, readSession, createLoginLimiter, createSessionStore } from "../lib/auth.mjs";
 import { parseInstances } from "../lib/instances.mjs";
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
@@ -11,7 +11,7 @@ import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, pr
 
 const PORT = Number(process.env.PORT || 8080);
 const AUTH_USER = process.env.AUTH_USER || "admin";
-const AUTH_PASSWORD = requirePasswordConfigured(process.env.AUTH_PASSWORD);
+const AUTH_PASSWORD = String(process.env.AUTH_PASSWORD || "").trim(); // 可选：留空走首次访问向导
 const INSTANCES = parseInstances(process.env.INSTANCES || "a,b");
 const BY_ID = new Map(INSTANCES.map((i) => [i.id, i]));
 const VNC_USER = process.env.VNC_USER || "abc";
@@ -190,6 +190,23 @@ function serveStatic(res, pathname) {
 }
 
 async function handleApi(req, res, url, sess) {
+  if (url.pathname === "/api/setup" && req.method === "GET") {
+    return json(res, 200, { needed: !users.hasAdmin() });
+  }
+  if (url.pathname === "/api/setup" && req.method === "POST") {
+    if (users.hasAdmin()) return json(res, 403, { error: "已完成初始化" });
+    const body = await readBody(req);
+    try {
+      const user = users.createAdmin({ username: body.username, password: body.password });
+      const token = createSessionToken();
+      sessions.set(token, { userId: user.id, expires: Date.now() + TTL_MS });
+      setCookie(res, COOKIE, token, Math.floor(TTL_MS / 1000));
+      console.log(`setup: admin ${user.username} created ip=${clientIp(req)}`);
+      return json(res, 200, { user });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
   if (url.pathname === "/api/login" && req.method === "POST") {
     const body = await readBody(req);
     const ip = clientIp(req);

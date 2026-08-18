@@ -92,6 +92,9 @@ describe("standalone product", () => {
     assert.match(gw, /\/api\\\/admin\\\/desks/);
     assert.match(gw, /renameDesk/);
     assert.match(ui, /data-rename/);
+    assert.match(gw, /\/api\/setup/);
+    assert.match(gw, /hasAdmin/);
+    assert.match(ui, /创建管理员/);
     const clipd = readFileSync(resolve(root, "docker/clipd.py"), "utf8");
     assert.match(clipd, /xclip/);
     assert.match(clipd, /image\//);

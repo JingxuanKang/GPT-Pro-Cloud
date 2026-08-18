@@ -14,7 +14,7 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, view: "home", deskId: null, err: "", modal: false, manage: null, rename: null, boot: true };
+const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, view: "home", deskId: null, err: "", modal: false, manage: null, rename: null, setup: false, boot: true };
 
 function assistOn() {
   return !!state.settings?.assist;
@@ -94,6 +94,41 @@ function renderLogin() {
     </form>
     <p class="auth-foot">账号由管理员分配，如需开通请联系管理员</p>
   </div>`;
+}
+
+function renderSetup() {
+  return `<div class="auth">
+    <div class="auth-brand">${MARK}<span>GPT&#8209;Pro Cloud</span></div>
+    <form class="auth-card" id="setup-form">
+      <h1>创建管理员</h1>
+      <p class="hint">首次部署：设置管理员账号，之后用它登录并邀请成员</p>
+      <div class="err" id="err"></div>
+      <label class="field"><span>用户名</span><input name="username" autocomplete="off" maxlength="32" autofocus required></label>
+      <label class="field"><span>密码</span><input name="password" type="password" autocomplete="new-password" minlength="6" required></label>
+      <label class="field"><span>确认密码</span><input name="password2" type="password" autocomplete="new-password" minlength="6" required></label>
+      <button class="btn lg block" type="submit">创建并登录</button>
+    </form>
+    <p class="auth-foot">这个向导只在还没有管理员时出现</p>
+  </div>`;
+}
+
+async function onSetup(e) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const p1 = String(fd.get("password") || "");
+  if (p1 !== String(fd.get("password2") || "")) {
+    $("#err").textContent = "两次输入的密码不一致";
+    return;
+  }
+  try {
+    const { user } = await api("/api/setup", { method: "POST", body: { username: fd.get("username"), password: p1 } });
+    state.setup = false;
+    state.me = user;
+    await refresh();
+    setHash("/");
+  } catch (err) {
+    $("#err").textContent = err.message;
+  }
 }
 
 function shell(inner) {
@@ -381,6 +416,11 @@ function render() {
   const root = $("#app");
   if (state.boot && !state.me) {
     root.innerHTML = renderBoot();
+    return;
+  }
+  if (state.setup && !state.me) {
+    root.innerHTML = renderSetup();
+    $("#setup-form").onsubmit = onSetup;
     return;
   }
   if (state.view === "login" || !state.me) {
@@ -934,6 +974,18 @@ window.addEventListener("hashchange", () => {
 (async function boot() {
   route();
   render();
+  try {
+    const s = await api("/api/setup");
+    if (s.needed) {
+      state.setup = true;
+      state.boot = false;
+      render();
+      setInterval(tick, 5000);
+      return;
+    }
+  } catch {
+    /* 网关旧版本没有这个接口时按已初始化处理 */
+  }
   try {
     await refresh();
     if (state.view === "login") setHash("/");

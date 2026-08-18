@@ -101,6 +101,19 @@ describe("users + presence", () => {
     assert.throws(() => store.renameDesk("a", "x".repeat(25)), /24/);
   });
 
+  it("boots without an admin and creates one via the setup path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gpc-setup-"));
+    const s = createUserStore({ file: join(dir, "users.json"), adminUser: "admin", adminPassword: "", deskIds: ["a"] });
+    assert.equal(s.hasAdmin(), false);
+    assert.equal(s.login("admin", "anything"), null);
+    const admin = s.createAdmin({ username: "boss", password: "secret6" });
+    assert.equal(admin.role, "admin");
+    assert.deepEqual(admin.desks, ["a"]);
+    assert.equal(s.hasAdmin(), true);
+    assert.throws(() => s.createAdmin({ username: "b2", password: "secret6" }), /已存在/);
+    assert.ok(s.login("boss", "secret6"));
+  });
+
   it("clears a user from every desk", () => {
     const p = createPresence();
     const ada = { id: "1", username: "ada" };

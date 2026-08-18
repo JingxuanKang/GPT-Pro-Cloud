@@ -32,7 +32,7 @@ Runs on Docker Compose (a Linux server; Docker Desktop on macOS or Windows), rou
 ```bash
 git clone https://github.com/JingxuanKang/gpt-pro-cloud.git
 cd gpt-pro-cloud
-cp .env.example .env   # set AUTH_PASSWORD
+cp .env.example .env
 ./scripts/up.sh
 ```
 
@@ -40,7 +40,7 @@ Deploy inside a LAN or a VPN such as Tailscale. The panel speaks plain HTTP — 
 
 ## Quick start
 
-Open `http://<host>:36090` and sign in as `admin`. Open each account card once and log in to ChatGPT inside it; the profile survives restarts, so this is a one-time step per account.
+Open `http://<host>:36090` — the first visit walks you through creating the administrator account (or pre-seed it with `AUTH_PASSWORD` in `.env` for automated deployments). Then open each account card once and log in to ChatGPT inside it; the profile survives restarts, so this is a one-time step per account.
 
 After that, any device on the same network opens the same URL and lands in the signed-in session.
 
@@ -83,7 +83,7 @@ Everything lives in `.env` — the commented [`.env.example`](.env.example) is t
 
 | Setting | Purpose |
 | --- | --- |
-| `AUTH_PASSWORD` | Administrator password for the gateway |
+| `AUTH_PASSWORD` | Optional: pre-seed the administrator password; leave empty to use the first-visit wizard |
 | `INSTANCES` | Comma-separated desktop ids to show as cards |
 | `BIND_ADDR` | Address the gateway publishes on; use the VPN address on public hosts |
 | `PROXY_URL_A`, `PROXY_URL_B` | Outbound proxy per account |
@@ -103,6 +103,8 @@ The gateway is the only published port. VNC and Chromium DevTools stay on the co
 The panel speaks plain HTTP. Everything, including the sign-in password, travels unencrypted, so this is safe only inside a LAN or a VPN. For access from the open internet, put an HTTPS reverse proxy such as Caddy or Nginx in front of the gateway.
 
 On a host with a public IP, set `BIND_ADDR` to the VPN address rather than `0.0.0.0`.
+
+The setup wizard only appears while no administrator exists. Complete the first run inside your private network, or pre-seed the administrator with `AUTH_PASSWORD`, so an exposed entry cannot be claimed by a stranger.
 
 ## Development
 

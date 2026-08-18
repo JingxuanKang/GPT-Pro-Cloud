@@ -32,7 +32,7 @@ GPT-Pro Cloud 是一套 Docker 网关加浏览器桌面，把已登录的 ChatGP
 ```bash
 git clone https://github.com/JingxuanKang/gpt-pro-cloud.git
 cd gpt-pro-cloud
-cp .env.example .env   # 设置 AUTH_PASSWORD
+cp .env.example .env
 ./scripts/up.sh
 ```
 
@@ -40,7 +40,7 @@ cp .env.example .env   # 设置 AUTH_PASSWORD
 
 ## 快速开始
 
-打开 `http://<host>:36090`，用 `admin` 登录。逐个打开账号卡片，在里面登录 ChatGPT——profile 跨重启保留，所以每个账号只需要做这一次。
+打开 `http://<host>:36090`，首次访问会引导你创建管理员账号（也可以在 `.env` 里用 `AUTH_PASSWORD` 预设，适合自动化部署）。然后逐个打开账号卡片，在里面登录 ChatGPT——profile 跨重启保留，所以每个账号只需要做这一次。
 
 之后同一网络里的任何设备打开同一个地址，进去就是已登录的会话。
 
@@ -83,7 +83,7 @@ cp .env.example .env   # 设置 AUTH_PASSWORD
 
 | 配置项 | 作用 |
 | --- | --- |
-| `AUTH_PASSWORD` | 网关管理员密码 |
+| `AUTH_PASSWORD` | 可选：预设管理员密码，留空走首次访问向导 |
 | `INSTANCES` | 逗号分隔的桌面 id，决定显示哪些卡片 |
 | `BIND_ADDR` | 网关监听地址；公网机器填 VPN 地址 |
 | `PROXY_URL_A`、`PROXY_URL_B` | 按账号单独指定出口代理 |
@@ -103,6 +103,8 @@ cp .env.example .env   # 设置 AUTH_PASSWORD
 面板走明文 HTTP，包括登录密码在内的所有流量都不加密，因此只有在局域网或 VPN 内才是安全的。要从公网访问，请自行在网关前面加一层 HTTPS 反代，例如 Caddy 或 Nginx。
 
 有公网 IP 的机器，`BIND_ADDR` 要填 VPN 地址，不要填 `0.0.0.0`。
+
+初始化向导只在还没有管理员时出现。请在内网完成首次初始化，或用 `AUTH_PASSWORD` 预设管理员，避免入口暴露期间被人抢注。
 
 ## 开发
 
