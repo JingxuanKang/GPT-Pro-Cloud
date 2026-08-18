@@ -10,6 +10,7 @@ import { createDockerClient, ensureDeskContainer } from "../lib/docker.mjs";
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, projectOnboardScript, sleep } from "../lib/chrome.mjs";
+import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 
 const PORT = Number(process.env.PORT || 8080);
 const AUTH_USER = process.env.AUTH_USER || "admin";
@@ -260,7 +261,7 @@ async function handleApi(req, res, url, sess) {
         name: users.deskNameOf(d.id) || d.name,
         ...(isAdmin ? { proxy: users.deskProxyOf(d.id) } : {}),
       }));
-    return json(res, 200, { desks });
+    return json(res, 200, { desks, ...(isAdmin ? { proxyPresets: users.proxyPresets() } : {}) });
   }
   if (url.pathname === "/api/admin/desks" && req.method === "POST") {
     if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
@@ -290,12 +291,7 @@ async function handleApi(req, res, url, sess) {
       if ("proxy" in body) {
         const proxy = users.setDeskProxy(rename[1], body.proxy);
         try {
-          const r = await fetch(`http://desktop-${rename[1]}:18790/proxy`, {
-            method: "POST",
-            headers: { "content-type": "text/plain; charset=utf-8" },
-            body: proxy,
-          });
-          if (!r.ok) throw new Error();
+          await applyDeskProxyLive(rename[1], proxy);
         } catch {
           return json(res, 502, { error: "代理已保存，但账号容器暂时不可达，重启该容器后生效" });
         }
@@ -304,6 +300,27 @@ async function handleApi(req, res, url, sess) {
       return json(res, 200, out);
     } catch (e) {
       return json(res, 400, { error: e.message });
+    }
+  }
+  if (url.pathname === "/api/admin/proxies" && req.method === "POST") {
+    if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
+    try {
+      const body = await readBody(req);
+      const proxy = users.setAllDeskProxies(body.proxy);
+      const ids = registry.ids();
+      const { failed } = await applyDeskProxiesLive(ids, proxy);
+      if (failed.length) {
+        return json(res, 502, {
+          error: failed.length === ids.length
+            ? "代理已保存，但账号容器暂时不可达，重启这些容器后生效"
+            : "代理已保存，但部分账号容器暂时不可达，重启这些容器后生效",
+          proxy,
+          failed,
+        });
+      }
+      return json(res, 200, { ok: true, proxy, desks: ids.length });
+    } catch (e) {
+      return json(res, e.status || 400, { error: e.message });
     }
   }
   if (url.pathname === "/api/presence") return json(res, 200, { presence: presence.all() });
