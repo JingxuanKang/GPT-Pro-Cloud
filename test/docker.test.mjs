@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,6 +12,7 @@ import {
   dataRootFromInspect,
   templateNetwork,
   ensureDeskContainer,
+  removeDeskContainer,
   DESK_LABEL,
 } from "../lib/docker.mjs";
 
@@ -81,7 +82,7 @@ describe("deskContainerSpec", () => {
 function startMockDocker({ existing = null, failCreate = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "gpc-dock-"));
   const socketPath = join(dir, "docker.sock");
-  const state = { created: [], started: [], connected: [] };
+  const state = { created: [], started: [], connected: [], removed: [] };
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://docker.local");
     const path = url.pathname.replace(/^\/v1\.\d+/, "");
@@ -121,6 +122,11 @@ function startMockDocker({ existing = null, failCreate = false } = {}) {
     }
     if (req.method === "POST" && /\/containers\/.+\/start$/.test(path)) {
       state.started.push(path);
+      send(204);
+      return;
+    }
+    if (req.method === "DELETE" && path.startsWith("/containers/")) {
+      state.removed.push(path);
       send(204);
       return;
     }
@@ -193,6 +199,32 @@ describe("ensureDeskContainer", () => {
     try {
       const client = createDockerClient({ socketPath: mock.socketPath });
       await assert.rejects(() => ensureDeskContainer("c", client), /engine exploded/);
+    } finally {
+      mock.server.close();
+    }
+  });
+});
+
+describe("removeDeskContainer", () => {
+  it("force-removes the extra container and wipes the bind dir", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gpc-wipe-"));
+    const dataRoot = join(dir, "data");
+    mkdirSync(join(dataRoot, "c"), { recursive: true });
+    writeFileSync(join(dataRoot, "c", "Cookies"), "login");
+    const existing = {
+      Name: "/gpt-pro-cloud-c",
+      State: { Running: true },
+      Mounts: [{ Destination: "/config", Source: join(dataRoot, "c") }],
+    };
+    const mock = await startMockDocker({ existing });
+    try {
+      const client = createDockerClient({ socketPath: mock.socketPath });
+      const out = await removeDeskContainer("c", client);
+      assert.equal(out.name, "gpt-pro-cloud-c");
+      assert.equal(out.wiped, true);
+      assert.equal(out.how, "fs");
+      assert.equal(existsSync(join(dataRoot, "c")), false);
+      assert.ok(mock.state.removed.some((p) => p.includes("gpt-pro-cloud-c")));
     } finally {
       mock.server.close();
     }

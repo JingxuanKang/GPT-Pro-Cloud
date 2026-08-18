@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import httpProxy from "http-proxy";
 import { createSessionToken, readSession, createLoginLimiter, createSessionStore } from "../lib/auth.mjs";
 import { parseInstances } from "../lib/instances.mjs";
-import { createDeskRegistry, provisionDesk } from "../lib/desks.mjs";
-import { createDockerClient, ensureDeskContainer } from "../lib/docker.mjs";
+import { createDeskRegistry, provisionDesk, retireDesk } from "../lib/desks.mjs";
+import { createDockerClient, ensureDeskContainer, removeDeskContainer } from "../lib/docker.mjs";
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
 import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
@@ -261,7 +261,7 @@ async function handleApi(req, res, url, sess) {
       .map((d) => ({
         id: d.id,
         name: users.deskNameOf(d.id) || d.name,
-        ...(isAdmin ? { proxy: users.deskProxyOf(d.id) } : {}),
+        ...(isAdmin ? { proxy: users.deskProxyOf(d.id), extra: users.isExtraDesk(d.id) } : {}),
       }));
     return json(res, 200, { desks, ...(isAdmin ? { proxyPresets: users.proxyPresets() } : {}) });
   }
@@ -283,6 +283,26 @@ async function handleApi(req, res, url, sess) {
     }
   }
   const rename = url.pathname.match(/^\/api\/admin\/desks\/([a-z0-9-]+)$/);
+  if (rename && req.method === "DELETE") {
+    if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
+    const id = rename[1];
+    try {
+      for (const v of presence.list(id)) {
+        if (v.id) kickLiveSession({ sessions, presence, sockets: liveSockets }, v.id);
+      }
+      presence.clear(id);
+      const desk = await retireDesk({
+        users,
+        registry,
+        id,
+        remove: (deskId) => removeDeskContainer(deskId, docker),
+      });
+      console.log(`desk removed id=${desk.id} by=${sess.user.username} ip=${clientIp(req)}`);
+      return json(res, 200, { ok: true, desk });
+    } catch (e) {
+      return json(res, e.status || 400, { error: e.message });
+    }
+  }
   if (rename && req.method === "PATCH") {
     if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
     if (!registry.has(rename[1])) return json(res, 404, { error: "账号不存在" });

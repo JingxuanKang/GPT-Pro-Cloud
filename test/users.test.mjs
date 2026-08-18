@@ -183,6 +183,16 @@ describe("users + presence", () => {
     a.setAllDeskProxies("http://127.0.0.1:7890");
     assert.equal(a.deskProxyOf("c"), "http://127.0.0.1:7890");
     assert.equal(a.deskProxyOf("a"), "http://127.0.0.1:7890");
+    assert.equal(a.isExtraDesk("c"), true);
+    assert.equal(a.isExtraDesk("a"), false);
+    a.removeDesk("c");
+    assert.deepEqual(a.listDeskIds(), ["a", "b"]);
+    assert.deepEqual(a.extraDeskIds(), []);
+    assert.equal(a.deskNameOf("c"), "");
+    assert.equal(a.canOpen(a.login("admin", "admin-secret"), "c"), false);
+    assert.equal(a.canOpen(a.login("erin", "secret6"), "c"), false);
+    assert.throws(() => a.removeDesk("a"), /内置/);
+    assert.throws(() => a.removeDesk("missing"), /不存在/);
   });
 
   it("clears a user from every desk", () => {
@@ -193,5 +203,8 @@ describe("users + presence", () => {
     p.leaveAll("1");
     assert.equal(p.list("a", 1000).length, 0);
     assert.equal(p.list("b", 1000).length, 0);
+    p.beat("a", ada, 1000);
+    p.clear("a");
+    assert.equal(p.list("a", 1000).length, 0);
   });
 });

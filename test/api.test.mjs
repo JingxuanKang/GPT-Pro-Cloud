@@ -145,4 +145,17 @@ describe("presence + kick API", { concurrency: 1 }, () => {
     const missing = await req(base, "/api/admin/users/not-a-user/kick", { method: "POST", cookie: adminCookie });
     assert.equal(missing.status, 404);
   });
+
+  it("refuses to delete a compose seed desk and a missing extra desk", async () => {
+    const seed = await req(base, "/api/admin/desks/a", { method: "DELETE", cookie: adminCookie });
+    assert.equal(seed.status, 400);
+    assert.match(seed.data.error || "", /内置/);
+    const ghost = await req(base, "/api/admin/desks/c", { method: "DELETE", cookie: adminCookie });
+    assert.equal(ghost.status, 404);
+    const ada = await req(base, "/api/login", { method: "POST", body: { username: "ada", password: "secret6" } });
+    const forbidden = await req(base, "/api/admin/desks/a", { method: "DELETE", cookie: ada.cookie });
+    assert.equal(forbidden.status, 403);
+    const list = await req(base, "/api/desks", { cookie: adminCookie });
+    assert.equal(list.data.desks.find((d) => d.id === "a").extra, false);
+  });
 });
