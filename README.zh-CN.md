@@ -143,3 +143,7 @@ docker compose logs -f gateway
 ## License
 
 MIT，见 [LICENSE](LICENSE)。基于 [KasmVNC](https://kasmweb.com/kasmvnc) 与 [LinuxServer.io](https://www.linuxserver.io/) 基础镜像构建。与 OpenAI 无从属关系；ChatGPT 是 OpenAI 的商标。
+
+## 友情链接
+
+[![认可linux.do](https://ld.xh.do/ld-badge.svg)](https://linux.do)

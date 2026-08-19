@@ -143,3 +143,7 @@ The gateway is Node 22 with no build step. `docker/` holds the desktop image wit
 ## License
 
 MIT. See [LICENSE](LICENSE). Built on [KasmVNC](https://kasmweb.com/kasmvnc) and the [LinuxServer.io](https://www.linuxserver.io/) base image. Not affiliated with OpenAI; ChatGPT is a trademark of OpenAI.
+
+## Links
+
+[![认可linux.do](https://ld.xh.do/ld-badge.svg)](https://linux.do)
