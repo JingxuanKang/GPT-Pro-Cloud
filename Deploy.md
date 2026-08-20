@@ -5,7 +5,7 @@
 | 容器 | 说明 |
 |---|---|
 | `gpt-pro-cloud-gateway` | 唯一入口 `:36090`，登录、账号选择、团队管理、桌面反代 |
-| `gpt-pro-cloud-a` / `b` | 内置 ChatGPT 席位，各一只独立 Chromium。调试口默认关闭；面板「多人分屏」才会开 CDP。`9222/9223` 不映射宿主机，cdp-fwd 只接受 gateway。开启后同一账号的第二人走分屏标签（`TAB_SEATS_MAX`，默认 3），不是第二只浏览器、也不是第二台容器 |
+| `gpt-pro-cloud-a` / `b` | 内置 ChatGPT 席位，各一只独立 Chromium。调试口默认关闭；面板「多人分屏」才会开 CDP。`9222/9223` 不映射宿主机，cdp-fwd 只接受 gateway。开启后同一账号上每个人都走独立分屏标签（含第一人，`TAB_SEATS_MAX`，默认 3），不是第二只浏览器、也不是第二台容器 |
 | `gpt-pro-cloud-<id>` | 面板里添加的额外席位，由 gateway 克隆 `desktop-a`；不写进 compose |
 
 持久化数据都在仓库目录下：`./data/<id>`（Chromium profile 与 ChatGPT 登录态）、`./data-panel/`（成员 `users.json`、会话 `sessions.json`、设置，以及 `extraDeskIds`）。两者都被 gitignore。

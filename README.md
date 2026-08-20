@@ -124,7 +124,7 @@ Everything lives in `.env` — the commented [`.env.example`](.env.example) is t
 | --- | --- |
 | `AUTH_PASSWORD` | Optional: pre-seed the administrator password; leave empty to use the first-visit wizard |
 | `INSTANCES` | Built-in compose seats (`a,b`). Extra desks are added in the panel |
-| `TAB_SEATS_MAX` | Concurrent chatgpt.com tab seats per account after the first occupant (default `3`, range 1–8). Idle tabs close after ~45s without a presence beat |
+| `TAB_SEATS_MAX` | Concurrent chatgpt.com tab seats per account when multi-user is on (default `3`, range 1–8). Every occupant is a tab. Idle tabs close after ~45s without a presence beat |
 | `BIND_ADDR` | Address the gateway publishes on; `127.0.0.1` when tunneling, LAN or VPN address on a private network |
 | `PROXY_URL_A`, `PROXY_URL_B` | Default per-account proxy; Settings (per desk or Apply to all) take precedence and apply immediately |
 | `PROXY_URL` | Default proxy shared by every account |
@@ -135,14 +135,14 @@ On **Settings**, **Apply to all** writes the same address to every ChatGPT desk 
 
 ## Concurrent tab seats
 
-One ChatGPT account is still one desktop container and one Chromium profile (`--user-data-dir=/config/chromium`). Two members must not share one VNC mouse after the account is signed in. Multi-user tab seats require the admin to turn on **允许多人同时使用** for that account; until then a second person is refused.
+One ChatGPT account is still one desktop container and one Chromium profile (`--user-data-dir=/config/chromium`). Two members must not share one VNC mouse — and on a multi-user desk they must not share one desktop picture either. Multi-user tab seats require the admin to turn on **允许多人同时使用** for that account; until then a second person is refused.
 
-- First-time ChatGPT login (no session cookies yet) uses the existing KasmVNC path so the owner can sign in.
-- After login, the first occupant still uses that VNC window. Anyone else who opens the same card gets a new `chatgpt.com` tab in the same Chromium. The gateway streams **that tab only** (CDP `Page.startScreencast`) and injects pointer/keyboard with CDP `Input`. The member never sees the tab strip or another seat's target.
+- When multi-user (CDP) is **off**, the first occupant gets exclusive KasmVNC. A second person is refused (`409 CDP_OFF`).
+- When multi-user is **on**, every occupant including the first gets their own `chatgpt.com` tab in the same Chromium — nobody is given the full desktop. The first user may attach to the existing kiosk ChatGPT target; later users get a background tab (`newWindow: false`), parked off-screen. The gateway streams **that tab only** (CDP `Page.startScreencast`) and injects pointer/keyboard with CDP `Input`. The member never sees the tab strip or another seat's target.
 - **断开** on the account card is per-seat: it drops that member's tab (or VNC) without killing the other tab or the container.
-- Cap: `TAB_SEATS_MAX` (default 3 tab seats on top of the first VNC occupant). An idle tab seat is closed after about 45 seconds without a presence beat.
+- Cap: `TAB_SEATS_MAX` (default 3 tab seats; everyone is a tab when multi-user is on). An idle tab seat is closed after about 45 seconds without a presence beat.
 - ChatGPT's own sidebar may still list the other member's chats. Page assist still attaches to the member's tab when they first enter.
-- `--kiosk` is off so extra tabs can be created. Extra windows are parked off-screen; members see the page viewport, not browser chrome.
+- `--kiosk` is off so extra tabs can be created. Extra targets are background tabs parked off-screen; members see the page viewport, not browser chrome.
 
 A Cloud / CI VM cannot run the real desktop image. Unit tests cover seat assignment, target isolation, disconnect-one-tab, and the occupancy cap. Phoenix should confirm two members on one signed-in account each see only their tab.
 
@@ -151,8 +151,8 @@ A Cloud / CI VM cannot run the real desktop image. Unit tests cover seat assignm
 ```
 browser ──▶ gateway (:36090) ──▶ desktop-a / desktop-b / extra desks
             login · picker · admin    one Chromium profile per account
-                                     ├─ first login / first occupant: KasmVNC
-                                     └─ extra members: CDP tab seat (page pixels only)
+                                     ├─ CDP off: exclusive KasmVNC (second occupant 409)
+                                     └─ CDP on: every occupant is a CDP tab seat (page pixels only)
 ```
 
 The gateway is the only published port. VNC and Chromium DevTools stay on the container network and are unreachable from outside. State lives in `./data/` (Chromium profiles) and `./data-panel/` (members, sessions, settings); both are git-ignored and never leave the host.

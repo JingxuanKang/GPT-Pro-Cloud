@@ -418,6 +418,7 @@ async function handleApi(req, res, url, sess) {
     } catch (e) {
       return json(res, e.status || 409, { error: e.message, cap: seats.cap, code: e.code });
     }
+    const claimedTargetIds = seats.list(id).map((s) => s.targetId).filter(Boolean);
     let seat;
     if (decision.attach) {
       seat = decision.seat || seats.ofUser(id, sess.user.id);
@@ -425,7 +426,7 @@ async function handleApi(req, res, url, sess) {
         const alive = await targetExists(id, seat.targetId);
         if (!alive) {
           try {
-            const created = await createParkedChatGPTTab(id);
+            const created = await createParkedChatGPTTab(id, { claimedTargetIds });
             seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId });
           } catch (e) {
             return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
@@ -439,7 +440,7 @@ async function handleApi(req, res, url, sess) {
     } else if (decision.mode === "tab") {
       let created;
       try {
-        created = await createParkedChatGPTTab(id);
+        created = await createParkedChatGPTTab(id, { claimedTargetIds });
       } catch (e) {
         return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
       }
