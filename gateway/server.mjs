@@ -281,7 +281,7 @@ async function handleApi(req, res, url, sess) {
         name: users.deskNameOf(d.id) || d.name,
         ...(isAdmin ? { proxy: users.deskProxyOf(d.id), extra: users.isExtraDesk(d.id) } : {}),
       }));
-    return json(res, 200, { desks, ...(isAdmin ? { proxyPresets: users.proxyPresets() } : {}) });
+    return json(res, 200, { desks, seatCap: seats.cap, ...(isAdmin ? { proxyPresets: users.proxyPresets() } : {}) });
   }
   if (url.pathname === "/api/admin/desks" && req.method === "POST") {
     if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });

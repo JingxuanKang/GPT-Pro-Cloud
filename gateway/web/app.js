@@ -21,7 +21,7 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, proxyPresets: [], view: "home", deskId: null, deskMode: "vnc", seatId: null, err: "", modal: false, manage: null, rename: null, create: false, setup: false, boot: true };
+const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, proxyPresets: [], view: "home", deskId: null, deskMode: "vnc", seatId: null, err: "", modal: false, manage: null, rename: null, create: false, assign: null, resetPw: null, selfPw: false, seatCap: 3, setup: false, boot: true };
 
 function assistOn() {
   return !!state.settings?.assist;
@@ -58,10 +58,6 @@ function occupancy(user) {
   return ids;
 }
 
-function kickBtn(id, name) {
-  return `<button type="button" class="m-kick" data-kick="${esc(id)}" data-kick-name="${esc(name)}">断开</button>`;
-}
-
 function deskName(id) {
   return state.desks.find((d) => d.id === id)?.name || "ChatGPT";
 }
@@ -82,12 +78,22 @@ const MARK = `<svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="
 const BLOOM = `<svg class="bloom" viewBox="0 0 41 41" aria-hidden="true"><path d="M37.5 16.7a9.3 9.3 0 0 0-1.3-8.4 9.5 9.5 0 0 0-10.2-3.6 9.5 9.5 0 0 0-7.2-5.7 9.5 9.5 0 0 0-9 4.3A9.4 9.4 0 0 0 3 8.8a9.5 9.5 0 0 0 1.1 10.8 9.4 9.4 0 0 0-1.4 8.5 9.5 9.5 0 0 0 10.2 3.6 9.5 9.5 0 0 0 7.3 5.7 9.5 9.5 0 0 0 9-4.3 9.4 9.4 0 0 0 6.7-5.5 9.5 9.5 0 0 0-1.1-10.9zm-15.3 18a7.1 7.1 0 0 1-4.6-1.7l.1-.1 6.3-3.6a1 1 0 0 0 .5-.9v-8.9l2.7 1.5a.1.1 0 0 1 .1.1v7.3a7.2 7.2 0 0 1-5.1 6.3zm-13.7-5.8a7.1 7.1 0 0 1-.9-4.8l.1.1 6.3 3.6a1 1 0 0 0 1 0l7.7-4.4v3.1a.1.1 0 0 1 0 .1l-6.4 3.7a7.2 7.2 0 0 1-7.8-1.4zm-1.8-14.8a7.1 7.1 0 0 1 3.7-3.1v.1l6.3 3.6a1 1 0 0 0 .5.9v8.9l-2.7-1.5a.1.1 0 0 1-.1-.1v-7.3a7.2 7.2 0 0 1-7.7-1.5zm27.3 3.2-6.3-3.6a1 1 0 0 0-1 0l-7.7 4.4v-3.1a.1.1 0 0 1 0-.1l6.3-3.7a7.2 7.2 0 0 1 8.7 9.3zm3.3 4.8-.1-.1-6.3-3.6a1 1 0 0 0-1 0L20.6 21v-3.1a.1.1 0 0 1 0-.1l6.4-3.6a7.2 7.2 0 0 1 2.3 10.4zM14.6 22.3l-2.7-1.6a.1.1 0 0 1-.1-.1v-7.3a7.2 7.2 0 0 1 11.8-5.5l-.1.1-6.3 3.6a1 1 0 0 0-.5.9v8.9z"/></svg>`;
 
 const ICO = {
-  back: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.5 5.5 9 12l6.5 6.5-1.4 1.4L6.2 12l7.9-7.9 1.4 1.4Z"/></svg>`,
+  back: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 5l-7 7 7 7"/></svg>`,
   image: `<svg class="ico-img" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm1.2 13h11.6l-3.4-4.6-2.6 3.3-2.2-2.6L6.2 17ZM8 9.2A1.6 1.6 0 1 0 8 6a1.6 1.6 0 0 0 0 3.2Z"/></svg>`,
-  share: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14 4h6v6h-2V7.4l-7.3 7.3-1.4-1.4L16.6 6H14V4ZM6 6h5v2H7.8A1.8 1.8 0 0 0 6 9.8v6.4C6 17.2 6.8 18 7.8 18h6.4c1 0 1.8-.8 1.8-1.8V13h2v3.2A3.8 3.8 0 0 1 14.2 20H7.8A3.8 3.8 0 0 1 4 16.2V9.8A3.8 3.8 0 0 1 7.8 6H11V6H6Z"/></svg>`,
-  arrow: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13.2 5.3 18.9 11l.9 1-.9 1-5.7 5.7-1.4-1.4 4.3-4.3H4v-2h12.1l-4.3-4.3 1.4-1.4Z"/></svg>`,
-  pencil: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14.06 6.19l3.75 3.75L7.5 20.25H3.75V16.5L14.06 6.19Zm1.41-1.41 1.83-1.83a1 1 0 0 1 1.41 0l2.34 2.34a1 1 0 0 1 0 1.41l-1.83 1.83-3.75-3.75Z"/></svg>`,
-  plus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/></svg>`,
+  share: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 14V4M8.5 7 12 3.5 15.5 7M5 12v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7"/></svg>`,
+  arrow: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13.2 5.3 18.9 11l.9 1-.9 1-5.7 5.7-1.4-1.4 4.3-4.3H4v-2h12.1l-4.3-4.3 1.4-1.4Z"/></svg>`,
+  pencil: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/></svg>`,
+  plus: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/></svg>`,
+  users: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11Zm-5.5 8.5c.6-3.2 2.9-4.9 5.5-4.9s4.9 1.7 5.5 4.9M15.5 10.7a2.8 2.8 0 1 0-1.6-5.3M16 14.8c2 .4 3.6 1.8 4.1 4.2"/></svg>`,
+  user: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 11.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM5 20c.8-3.8 3.8-5.7 7-5.7s6.2 1.9 7 5.7"/></svg>`,
+  lock: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="5.5" y="10.5" width="13" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>`,
+  key: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M11.5 12H20M17 12v3M20 12v2.5"/></svg>`,
+  ban: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path stroke="currentColor" stroke-width="1.8" d="M6.5 6.5l11 11"/></svg>`,
+  trash: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M10 7V4h4v3M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>`,
+  grid: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg>`,
+  userplus: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM3.5 20c.7-3.6 3.4-5.5 6.5-5.5 1.1 0 2.1.2 3 .7M18 14v6M15 17h6"/></svg>`,
+  userx: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM3.5 20c.7-3.6 3.4-5.5 6.5-5.5 1.1 0 2.1.2 3 .7M16 15l5 5M21 15l-5 5"/></svg>`,
+  clip: `<svg class="ico-clip" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M9 4h6v3H9zM15 5h3a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h3"/></svg>`,
 };
 
 function greet() {
@@ -109,11 +115,11 @@ function renderLogin() {
       <h1>欢迎回来</h1>
       <p class="hint">登录以使用团队的 ChatGPT 账号</p>
       <div class="err" id="err">${esc(state.err)}</div>
-      <label class="field"><span>用户名</span><input name="username" autocomplete="username" autofocus required></label>
-      <label class="field"><span>密码</span><input name="password" type="password" autocomplete="current-password" required></label>
+      <label class="field"><span>用户名</span><span class="inwrap">${ICO.user}<input name="username" autocomplete="username" autofocus required></span></label>
+      <label class="field"><span>密码</span><span class="inwrap">${ICO.lock}<input name="password" type="password" autocomplete="current-password" required></span></label>
       <button class="btn lg block" type="submit">登录</button>
     </form>
-    <p class="auth-foot">账号由管理员分配，如需开通请联系管理员</p>
+    <p class="auth-foot">账号由管理员分配</p>
   </div>`;
 }
 
@@ -124,129 +130,84 @@ function renderSetup() {
       <h1>创建管理员</h1>
       <p class="hint">首次部署：设置管理员账号，之后用它登录并邀请成员</p>
       <div class="err" id="err"></div>
-      <label class="field"><span>用户名</span><input name="username" autocomplete="off" maxlength="32" autofocus required></label>
-      <label class="field"><span>密码</span><input name="password" type="password" autocomplete="new-password" minlength="6" required></label>
-      <label class="field"><span>确认密码</span><input name="password2" type="password" autocomplete="new-password" minlength="6" required></label>
+      <label class="field"><span>用户名</span><span class="inwrap">${ICO.user}<input name="username" autocomplete="off" maxlength="32" autofocus required></span></label>
+      <label class="field"><span>密码</span><span class="inwrap">${ICO.lock}<input name="password" type="password" autocomplete="new-password" minlength="6" required></span></label>
+      <label class="field"><span>确认密码</span><span class="inwrap">${ICO.lock}<input name="password2" type="password" autocomplete="new-password" minlength="6" required></span></label>
       <button class="btn lg block" type="submit">创建并登录</button>
     </form>
     <p class="auth-foot">这个向导只在还没有管理员时出现</p>
   </div>`;
 }
 
-async function onSetup(e) {
-  e.preventDefault();
-  const fd = new FormData(e.target);
-  const p1 = String(fd.get("password") || "");
-  if (p1 !== String(fd.get("password2") || "")) {
-    $("#err").textContent = "两次输入的密码不一致";
-    return;
-  }
-  try {
-    const { user } = await api("/api/setup", { method: "POST", body: { username: fd.get("username"), password: p1 } });
-    state.setup = false;
-    state.me = user;
-    await refresh();
-    setHash("/");
-  } catch (err) {
-    $("#err").textContent = err.message;
-  }
-}
-
 function shell(inner) {
-  const team =
+  const admin =
     state.me?.role === "admin"
-      ? `<a href="#/admin" class="top-link ${state.view === "admin" ? "on" : ""}">团队</a>
-         <a href="#/settings" class="top-link ${state.view === "settings" ? "on" : ""}">设置</a>
-         <span class="top-sep"></span>`
+      ? `<a href="#/admin" class="top-link ${state.view === "admin" ? "on" : ""}">管理</a>
+         <a href="#/settings" class="top-link ${state.view === "settings" ? "on" : ""}">设置</a>`
       : "";
   return `<div class="app">
     <header class="top">
       <a href="#/" class="brand">${MARK}<span>GPT&#8209;Pro Cloud</span></a>
-      ${team}
-      <span class="top-user">${av(state.me?.username)}<b>${esc(state.me?.username)}</b></span>
+      <a href="#/" class="top-link ${state.view === "home" ? "on" : ""}">工作台</a>
+      ${admin}
+      <span class="top-sep"></span>
+      <span class="top-user">${av(state.me?.username)}<span>${esc(state.me?.username)}</span></span>
       <button type="button" class="text-btn" id="logout">退出</button>
     </header>
     <main class="page">${inner}</main>
   </div>`;
 }
 
+function seatCap() {
+  return state.seatCap || 3;
+}
+
+function deskStatus(live) {
+  return live
+    ? `<span class="status live"><i></i>使用中</span>`
+    : `<span class="status"><i></i>空闲</span>`;
+}
+
+function deskOcc(d) {
+  const vs = people(d.id);
+  if (!vs.length) return `<div class="occ empty"><span class="seats">${ICO.users}0/${seatCap()}</span></div>`;
+  const stack = vs
+    .slice(0, 4)
+    .map((v) => av(v.username, "av mini"))
+    .join("");
+  return `<div class="occ"><span class="stack">${stack}</span><span class="seats">${ICO.users}${vs.length}/${seatCap()}</span></div>`;
+}
+
 function renderHome() {
   const name = esc(state.me?.username || "");
+  const isAdmin = state.me?.role === "admin";
   const head = `<header class="page-head">
     <h1 class="display">${greet()}，${name}</h1>
-    <p class="hint">${state.desks.length ? "选择一个 ChatGPT 账号开始使用。已登录后，第二个人进入会拿到自己的标签页，看不到对方的画面。" : "还没有可使用的账号，请联系管理员开通。"}</p>
+    ${state.desks.length ? "" : `<p class="hint">还没有可使用的账号，请联系管理员开通。</p>`}
   </header>`;
-  const isAdmin = state.me?.role === "admin";
   const cards = state.desks
     .map((d) => {
-      const vs = people(d.id);
-      const live = vs.length > 0;
-      const stack = vs
-        .slice(0, 4)
-        .map((v) => av(v.username, "av mini"))
-        .join("");
-      const names = vs.map((v) => v.username).join("、");
-      const kicks = isAdmin
-        ? vs
-            .filter((v) => v.id && v.id !== state.me?.id)
-            .map((v) => kickBtn(v.id, v.username))
-            .join("")
-        : "";
-      const users = live
-        ? `<span class="m-users"><span class="stack">${stack}</span><span>${esc(names)}</span>${kicks}</span>`
-        : `<span class="m-users"><span>无人使用</span></span>`;
-      const pencil = isAdmin
-        ? `<button type="button" class="m-rename" data-rename="${esc(d.id)}" aria-label="重命名">${ICO.pencil}</button>`
-        : "";
-      const del = isAdmin && d.extra
-        ? `<button type="button" class="m-kick" data-delete="${esc(d.id)}" data-delete-name="${esc(d.name)}" data-delete-live="${live ? "1" : ""}">删除</button>`
-        : "";
-      return `<div class="machine" data-open="${esc(d.id)}" role="button" tabindex="0">
-        <span class="m-body">
-          <span class="m-head">
-            <span class="m-mark">${BLOOM}</span>
-            <span class="badge ${live ? "live" : ""}"><i class="status-dot"></i>${live ? "使用中" : "空闲"}</span>
-          </span>
-          <span class="m-name">${esc(d.name)}${pencil}</span>
-        </span>
-        <span class="m-foot">
-          ${users}
-          ${del}
-          <span class="m-go">进入${ICO.arrow}</span>
-        </span>
+      const live = people(d.id).length > 0;
+      return `<div class="card click" data-open="${esc(d.id)}" role="button" tabindex="0">
+        <div class="card-head"><span class="tile">${BLOOM}</span>${deskStatus(live)}</div>
+        <span class="card-name"><span>${esc(d.name)}</span></span>
+        ${deskOcc(d)}
+        <span class="btn ${live ? "" : "ghost"} block">进入${ICO.arrow}</span>
       </div>`;
     })
     .join("");
   const addCard = isAdmin
-    ? `<div class="machine add" data-add-desk role="button" tabindex="0">
-        <span class="m-body">
-          <span class="m-head">
-            <span class="m-mark plus">${ICO.plus}</span>
-          </span>
-          <span class="m-name">添加 ChatGPT 账号</span>
-        </span>
-        <span class="m-foot">
-          <span class="m-users"><span>启动一台新的桌面</span></span>
-          <span class="m-go">添加${ICO.arrow}</span>
-        </span>
+    ? `<div class="card add" data-add-desk role="button" tabindex="0">
+        <span class="add-ring">${ICO.plus}</span>
+        <b>添加账号</b>
       </div>`
     : "";
-  const rd = state.rename ? state.desks.find((d) => d.id === state.rename) : null;
-  const renameModal = rd
-    ? `<div class="mask" id="rename-mask">
-        <form class="sheet" id="rename-form">
-          <h2>重命名账号</h2>
-          <p class="hint">这个名字对所有成员可见。留空则恢复默认名。</p>
-          <div class="err" id="rename-err"></div>
-          <label class="field"><span>名字</span><input name="name" value="${esc(rd.name)}" maxlength="24" autofocus autocomplete="off"></label>
-          <div class="sheet-actions">
-            <button class="btn ghost" type="button" id="rename-cancel">取消</button>
-            <button class="btn" type="submit">保存</button>
-          </div>
-        </form>
-      </div>`
-    : "";
-  const createModal = state.create
+  const grid = cards || addCard ? `<div class="cardgrid home">${cards}${addCard}</div>` : "";
+  return shell(`${head}${grid}${renderCreateModal()}`);
+}
+
+function renderCreateModal() {
+  return state.create
     ? `<div class="mask" id="create-mask">
         <form class="sheet" id="create-form">
           <h2>添加 ChatGPT 账号</h2>
@@ -260,37 +221,72 @@ function renderHome() {
         </form>
       </div>`
     : "";
-  const grid = cards || addCard ? `<div class="machines">${cards}${addCard}</div>` : "";
-  return shell(`${head}${grid}${renameModal}${createModal}`);
+}
+
+function memberStatus(u) {
+  if (u.disabled) return `<span class="status off"><i></i>已停用</span>`;
+  return occupancy(u).length
+    ? `<span class="status live"><i></i>在线</span>`
+    : `<span class="status"><i></i>离线</span>`;
 }
 
 function renderAdmin() {
   if (state.me?.role !== "admin") return renderHome();
-  const rows = state.users
-    .map((u) => {
-      const chips = (u.desks || []).map((id) => `<span class="chip">${esc(deskName(id))}</span>`).join("");
-      const on = occupancy(u);
-      const liveChip = on.length
-        ? `<span class="chip live">${esc(on.map(deskName).join("、"))} · 使用中</span>`
-        : "";
-      const actions =
-        u.role === "admin"
-          ? ""
-          : `<button type="button" class="text-btn" data-manage="${esc(u.id)}">管理</button>
-             <button type="button" class="text-btn danger" data-del="${esc(u.id)}" data-name="${esc(u.username)}">移除</button>`;
-      const role = u.role === "admin" ? "管理员" : "成员";
-      const where = on.length ? ` · 正在使用 ${esc(on.map(deskName).join("、"))}` : "";
-      return `<article class="person ${u.disabled ? "off" : ""}">
-        <div class="person-who">${av(u.username)}<div class="person-id"><b>${esc(u.username)}</b><span>${role}${where}${u.disabled ? ` · <i class="off-note">已停用</i>` : ""}</span></div></div>
-        <div class="access">${liveChip}${chips || (liveChip ? "" : `<span class="none">未分配账号</span>`)}</div>
-        <div class="person-actions">${actions}</div>
+  const deskCards = state.desks
+    .map((d) => {
+      const vs = people(d.id);
+      const live = vs.length > 0;
+      const others = vs.filter((v) => v.id && v.id !== state.me?.id);
+      return `<article class="card">
+        <div class="card-head row"><span class="tile sm">${BLOOM}</span><span class="card-name"><span>${esc(d.name)}</span></span>${deskStatus(live)}</div>
+        ${deskOcc(d)}
+        <button type="button" class="btn ${live ? "" : "ghost"} block" data-open="${esc(d.id)}">进入${ICO.arrow}</button>
+        <div class="acts">
+          <button type="button" class="act" data-rename="${esc(d.id)}">${ICO.pencil}重命名</button>
+          <button type="button" class="act" data-assign="${esc(d.id)}">${ICO.userplus}分配</button>
+          ${others.length ? `<button type="button" class="act" data-kick-desk="${esc(d.id)}" data-kick-name="${esc(d.name)}">${ICO.userx}断开</button>` : ""}
+          ${d.extra ? `<button type="button" class="act danger" data-delete="${esc(d.id)}" data-delete-name="${esc(d.name)}" data-delete-live="${live ? "1" : ""}">${ICO.trash}删除</button>` : ""}
+        </div>
       </article>`;
     })
     .join("");
+  const members = state.users.filter((u) => u.role !== "admin");
+  const memberCards = members
+    .map((u) => {
+      const chips = (u.desks || [])
+        .map((id) => `<span class="chip">${BLOOM}${esc(deskName(id))}</span>`)
+        .join("");
+      return `<article class="card">
+        <div class="card-head row">${av(u.username, "av big")}<span class="card-name"><span>${esc(u.username)}</span></span>${memberStatus(u)}</div>
+        <div class="chips">${chips || `<span class="chip none">未分配账号</span>`}</div>
+        <div class="acts">
+          <button type="button" class="act" data-manage="${esc(u.id)}">${ICO.grid}可用账号</button>
+          <button type="button" class="act" data-resetpw="${esc(u.id)}">${ICO.key}重置密码</button>
+          <button type="button" class="act" data-toggle="${esc(u.id)}" data-disabled="${u.disabled ? "1" : ""}" data-name="${esc(u.username)}">${ICO.ban}${u.disabled ? "启用" : "停用"}</button>
+          <button type="button" class="act danger" data-del="${esc(u.id)}" data-name="${esc(u.username)}">${ICO.trash}移除</button>
+        </div>
+      </article>`;
+    })
+    .join("");
+  const myCard = `<article class="card">
+    <div class="card-head row">${av(state.me?.username, "av big")}<span class="card-name"><span>${esc(state.me?.username)}</span></span><span class="status ink"><i></i>管理员</span></div>
+    <button type="button" class="btn ghost block" id="self-pw">${ICO.key}修改密码</button>
+  </article>`;
+  return shell(`<header class="page-head"><h1 class="display">管理</h1></header>
+    <div class="sec-head">${BLOOM}<b>ChatGPT 账号</b><button type="button" class="sec-add" data-add-desk>${ICO.plus}添加账号</button></div>
+    <div class="cardgrid">${deskCards}</div>
+    <div class="sec-head">${ICO.users}<b>成员</b><button type="button" class="sec-add" id="add-user">${ICO.plus}邀请成员</button></div>
+    <div class="cardgrid">${memberCards || `<article class="card add" data-invite-empty role="button" tabindex="0"><span class="add-ring">${ICO.plus}</span><b>邀请成员</b></article>`}</div>
+    <div class="sec-head">${ICO.user}<b>我的账号</b></div>
+    <div class="cardgrid">${myCard}</div>
+    ${renderCreateModal()}${renderAdminModals()}`);
+}
+
+function renderAdminModals() {
   const checks = state.desks
     .map((d) => `<label class="pick"><input type="checkbox" name="desks" value="${esc(d.id)}" checked> ${esc(d.name)}</label>`)
     .join("");
-  const modal = state.modal
+  const invite = state.modal
     ? `<div class="mask" id="modal">
         <form class="sheet" id="user-form">
           <h2>邀请成员</h2>
@@ -321,15 +317,10 @@ function renderAdmin() {
   const manageModal = mu
     ? `<div class="mask" id="manage-mask">
         <form class="sheet" id="manage-form">
-          <h2>管理成员</h2>
-          <p class="hint">调整 ${esc(mu.username)} 的账号权限与登录设置。</p>
+          <h2>可用账号</h2>
+          <p class="hint">勾选 ${esc(mu.username)} 可以使用的 ChatGPT 账号。</p>
           <div class="err" id="manage-err"></div>
-          <div class="field">
-            <span>可使用</span>
-            <div class="picks">${manageChecks}</div>
-          </div>
-          <label class="field"><span>重置密码</span><input name="password" type="password" autocomplete="new-password" minlength="6" placeholder="留空则不修改"></label>
-          <label class="pick block-pick"><input type="checkbox" name="disabled" ${mu.disabled ? "checked" : ""}> 停用登录（已有会话立即失效）</label>
+          <div class="picks">${manageChecks}</div>
           <div class="sheet-actions">
             <button class="btn ghost" type="button" id="manage-cancel">取消</button>
             <button class="btn" type="submit">保存</button>
@@ -337,18 +328,75 @@ function renderAdmin() {
         </form>
       </div>`
     : "";
-  return shell(`<div class="narrow">
-    <header class="page-head split">
-      <div>
-        <h1 class="display">团队</h1>
-        <p class="hint">管理谁可以登录、能用哪些账号。谁在使用某台桌面，请到首页账号卡片上断开。</p>
-      </div>
-      <button type="button" class="btn" id="add-user">邀请成员</button>
-    </header>
-    <section class="panel">
-      <div class="people">${rows}</div>
-    </section>
-  </div>${modal}${manageModal}`);
+  const ad = state.assign ? state.desks.find((d) => d.id === state.assign) : null;
+  const assignChecks = ad
+    ? state.users
+        .filter((u) => u.role !== "admin")
+        .map(
+          (u) =>
+            `<label class="pick"><input type="checkbox" name="users" value="${esc(u.id)}" ${(u.desks || []).includes(ad.id) ? "checked" : ""}> ${esc(u.username)}</label>`,
+        )
+        .join("")
+    : "";
+  const assignModal = ad
+    ? `<div class="mask" id="assign-mask">
+        <form class="sheet" id="assign-form">
+          <h2>分配成员</h2>
+          <p class="hint">勾选可以使用「${esc(ad.name)}」的成员。</p>
+          <div class="err" id="assign-err"></div>
+          <div class="picks">${assignChecks || `<span class="hint">还没有成员，先邀请一位。</span>`}</div>
+          <div class="sheet-actions">
+            <button class="btn ghost" type="button" id="assign-cancel">取消</button>
+            <button class="btn" type="submit">保存</button>
+          </div>
+        </form>
+      </div>`
+    : "";
+  const ru = state.resetPw ? state.users.find((u) => u.id === state.resetPw) : null;
+  const resetModal = ru
+    ? `<div class="mask" id="resetpw-mask">
+        <form class="sheet" id="resetpw-form">
+          <h2>重置密码</h2>
+          <p class="hint">给 ${esc(ru.username)} 设一个新密码，对方已有会话会立即失效。</p>
+          <div class="err" id="resetpw-err"></div>
+          <label class="field"><span>新密码</span><span class="inwrap">${ICO.lock}<input name="password" type="password" autocomplete="new-password" minlength="6" autofocus required></span></label>
+          <div class="sheet-actions">
+            <button class="btn ghost" type="button" id="resetpw-cancel">取消</button>
+            <button class="btn" type="submit">保存</button>
+          </div>
+        </form>
+      </div>`
+    : "";
+  const selfModal = state.selfPw
+    ? `<div class="mask" id="selfpw-mask">
+        <form class="sheet" id="selfpw-form">
+          <h2>修改密码</h2>
+          <p class="hint">保存后需要用新密码重新登录。</p>
+          <div class="err" id="selfpw-err"></div>
+          <label class="field"><span>新密码</span><span class="inwrap">${ICO.lock}<input name="password" type="password" autocomplete="new-password" minlength="6" autofocus required></span></label>
+          <div class="sheet-actions">
+            <button class="btn ghost" type="button" id="selfpw-cancel">取消</button>
+            <button class="btn" type="submit">保存</button>
+          </div>
+        </form>
+      </div>`
+    : "";
+  const rd = state.rename ? state.desks.find((d) => d.id === state.rename) : null;
+  const renameModal = rd
+    ? `<div class="mask" id="rename-mask">
+        <form class="sheet" id="rename-form">
+          <h2>重命名账号</h2>
+          <p class="hint">这个名字对所有成员可见。留空则恢复默认名。</p>
+          <div class="err" id="rename-err"></div>
+          <label class="field"><span>名字</span><input name="name" value="${esc(rd.name)}" maxlength="24" autofocus autocomplete="off"></label>
+          <div class="sheet-actions">
+            <button class="btn ghost" type="button" id="rename-cancel">取消</button>
+            <button class="btn" type="submit">保存</button>
+          </div>
+        </form>
+      </div>`
+    : "";
+  return `${invite}${manageModal}${assignModal}${resetModal}${selfModal}${renameModal}`;
 }
 
 function sharedProxyValue() {
@@ -459,11 +507,11 @@ function setChip(kind, text) {
   }
   if (text) {
     const one = String(text).replace(/\s+/g, " ").trim();
-    chip.innerHTML = `<span>${esc(one)}</span>${clipKeys()}`;
+    chip.innerHTML = `${ICO.clip}<span>${esc(one)}</span>${clipKeys()}`;
     chip.title = "拷到本机";
     return;
   }
-  chip.innerHTML = `<i class="pulse"></i><span>waiting</span>${clipKeys()}`;
+  chip.innerHTML = `${ICO.clip}${clipKeys()}`;
   chip.title = `${MOD}+V 贴进来`;
 }
 
@@ -519,7 +567,7 @@ function renderDesk() {
       : `<iframe src="${src}" allow="clipboard-read; clipboard-write; autoplay; microphone"></iframe>`;
   return `<div class="stage">
     <div class="chrome">
-      <a class="back" href="#/">${ICO.back}<span>退出</span></a>
+      <a class="back" href="#/">${ICO.back}<span>工作台</span></a>
       <div class="chrome-mid">
         ${BLOOM}
         <span class="title">${esc(d ? d.name : "ChatGPT")}</span>
@@ -585,6 +633,9 @@ async function onLogout(e) {
   state.manage = null;
   state.rename = null;
   state.create = false;
+  state.assign = null;
+  state.resetPw = null;
+  state.selfPw = false;
   setHash("/login");
 }
 
@@ -1081,29 +1132,6 @@ async function openDesk(id) {
   setHash(`/desk/${id}`);
 }
 
-async function onKick(e) {
-  e.preventDefault();
-  e.stopPropagation();
-  const btn = e.currentTarget;
-  const id = btn.getAttribute("data-kick");
-  const name = btn.getAttribute("data-kick-name") || "这位成员";
-  if (!id) return;
-  if (!confirm(`确定断开 ${name} 的会话？对方需要重新登录。`)) return;
-  try {
-    await api(`/api/admin/users/${id}/kick`, { method: "POST" });
-    toast(`已断开 ${name}`);
-    await refresh();
-  } catch (err) {
-    toast(err.message || "未能断开");
-  }
-}
-
-function bindKick() {
-  document.querySelectorAll("[data-kick]").forEach((btn) => {
-    btn.onclick = onKick;
-  });
-}
-
 async function onDeleteDesk(e) {
   e.preventDefault();
   e.stopPropagation();
@@ -1127,7 +1155,6 @@ async function onDeleteDesk(e) {
 function bind() {
   const logout = $("#logout");
   if (logout) logout.onclick = onLogout;
-  bindKick();
   document.querySelectorAll("[data-delete]").forEach((btn) => {
     btn.onclick = onDeleteDesk;
   });
@@ -1286,11 +1313,8 @@ function bind() {
     mForm.onsubmit = async (e) => {
       e.preventDefault();
       const fd = new FormData(mForm);
-      const body = { desks: fd.getAll("desks"), disabled: fd.get("disabled") === "on" };
-      const pw = String(fd.get("password") || "");
-      if (pw) body.password = pw;
       try {
-        await api(`/api/admin/users/${state.manage}`, { method: "PATCH", body });
+        await api(`/api/admin/users/${state.manage}`, { method: "PATCH", body: { desks: fd.getAll("desks") } });
         state.manage = null;
         await refresh();
       } catch (err) {
@@ -1348,6 +1372,157 @@ function bind() {
         else proxyAll.disabled = false;
       }
     };
+  document.querySelectorAll("[data-invite-empty]").forEach((btn) => {
+    btn.onclick = () => {
+      state.modal = true;
+      render();
+    };
+  });
+  document.querySelectorAll("[data-assign]").forEach((btn) => {
+    btn.onclick = () => {
+      state.assign = btn.getAttribute("data-assign");
+      render();
+    };
+  });
+  const aCancel = $("#assign-cancel");
+  if (aCancel)
+    aCancel.onclick = () => {
+      state.assign = null;
+      render();
+    };
+  const aMask = $("#assign-mask");
+  if (aMask)
+    aMask.onclick = (e) => {
+      if (e.target === aMask) {
+        state.assign = null;
+        render();
+      }
+    };
+  const aForm = $("#assign-form");
+  if (aForm)
+    aForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const deskId = state.assign;
+      const picked = new Set(new FormData(aForm).getAll("users"));
+      try {
+        for (const u of state.users) {
+          if (u.role === "admin") continue;
+          const has = (u.desks || []).includes(deskId);
+          const want = picked.has(u.id);
+          if (has === want) continue;
+          const desks = want ? [...(u.desks || []), deskId] : (u.desks || []).filter((id) => id !== deskId);
+          await api(`/api/admin/users/${u.id}`, { method: "PATCH", body: { desks } });
+        }
+        state.assign = null;
+        await refresh();
+      } catch (err) {
+        const box = $("#assign-err");
+        if (box) box.textContent = err.message;
+      }
+    };
+  document.querySelectorAll("[data-kick-desk]").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.getAttribute("data-kick-desk");
+      const name = btn.getAttribute("data-kick-name") || "这个账号";
+      const vs = people(id).filter((v) => v.id && v.id !== state.me?.id);
+      if (!vs.length) return;
+      if (!confirm(`断开「${name}」上的 ${vs.map((v) => v.username).join("、")}？对方需要重新登录。`)) return;
+      btn.disabled = true;
+      try {
+        for (const v of vs) await api(`/api/admin/users/${v.id}/kick`, { method: "POST" });
+        toast("已断开");
+        await refresh();
+      } catch (err) {
+        toast(err.message || "未能断开");
+        btn.disabled = false;
+      }
+    };
+  });
+  document.querySelectorAll("[data-toggle]").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.getAttribute("data-toggle");
+      const disabled = btn.getAttribute("data-disabled") === "1";
+      const name = btn.getAttribute("data-name") || "这位成员";
+      if (!disabled && !confirm(`停用 ${name}？已有会话立即失效。`)) return;
+      try {
+        await api(`/api/admin/users/${id}`, { method: "PATCH", body: { disabled: !disabled } });
+        toast(disabled ? `已启用 ${name}` : `已停用 ${name}`);
+        await refresh();
+      } catch (err) {
+        toast(err.message || "没能保存");
+      }
+    };
+  });
+  document.querySelectorAll("[data-resetpw]").forEach((btn) => {
+    btn.onclick = () => {
+      state.resetPw = btn.getAttribute("data-resetpw");
+      render();
+    };
+  });
+  const pCancel = $("#resetpw-cancel");
+  if (pCancel)
+    pCancel.onclick = () => {
+      state.resetPw = null;
+      render();
+    };
+  const pMask = $("#resetpw-mask");
+  if (pMask)
+    pMask.onclick = (e) => {
+      if (e.target === pMask) {
+        state.resetPw = null;
+        render();
+      }
+    };
+  const pForm = $("#resetpw-form");
+  if (pForm)
+    pForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(pForm);
+      try {
+        await api(`/api/admin/users/${state.resetPw}`, { method: "PATCH", body: { password: fd.get("password") } });
+        state.resetPw = null;
+        toast("密码已重置");
+        await refresh();
+      } catch (err) {
+        $("#resetpw-err").textContent = err.message;
+      }
+    };
+  const selfBtn = $("#self-pw");
+  if (selfBtn)
+    selfBtn.onclick = () => {
+      state.selfPw = true;
+      render();
+    };
+  const sCancel = $("#selfpw-cancel");
+  if (sCancel)
+    sCancel.onclick = () => {
+      state.selfPw = false;
+      render();
+    };
+  const sMask = $("#selfpw-mask");
+  if (sMask)
+    sMask.onclick = (e) => {
+      if (e.target === sMask) {
+        state.selfPw = false;
+        render();
+      }
+    };
+  const sForm = $("#selfpw-form");
+  if (sForm)
+    sForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(sForm);
+      try {
+        await api(`/api/admin/users/${state.me.id}`, { method: "PATCH", body: { password: fd.get("password") } });
+        state.selfPw = false;
+        state.me = null;
+        toast("密码已修改，请重新登录");
+        setHash("/login");
+        render();
+      } catch (err) {
+        $("#selfpw-err").textContent = err.message;
+      }
+    };
   const assist = $("#assist-toggle");
   if (assist)
     assist.onchange = async () => {
@@ -1388,6 +1563,7 @@ async function refresh() {
   state.settings = me.settings || { assist: false };
   state.desks = desks.desks;
   state.proxyPresets = desks.proxyPresets || [];
+  state.seatCap = desks.seatCap || state.seatCap || 3;
   state.presence = presence.presence || {};
   if (state.me.role === "admin") state.users = (await api("/api/admin/users")).users;
   state.boot = false;
@@ -1406,7 +1582,7 @@ async function tick() {
         who.textContent = names;
         who.hidden = !names;
       }
-    } else if (!state.modal && !state.manage && !state.rename && !state.create) {
+    } else if (!state.modal && !state.manage && !state.rename && !state.create && !state.assign && !state.resetPw && !state.selfPw) {
       const r = await api("/api/presence");
       state.presence = r.presence || {};
       if (state.view === "home" || state.view === "admin") render();
