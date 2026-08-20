@@ -6,7 +6,7 @@
 
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED?style=flat-square&logo=docker&logoColor=white)](docker-compose.yml)
 [![Node.js](https://img.shields.io/badge/node.js-22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](gateway/)
-[![Chromium](https://img.shields.io/badge/chromium-kiosk-4587F3?style=flat-square&logo=googlechrome&logoColor=white)](docker/)
+[![Chromium](https://img.shields.io/badge/chromium-tab_seats-4587F3?style=flat-square&logo=googlechrome&logoColor=white)](docker/)
 [![KasmVNC](https://img.shields.io/badge/kasmvnc-web_desktop-5257CF?style=flat-square)](https://kasmweb.com/kasmvnc)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-yes-178F5F?style=flat-square)](Deploy.md)
 [![License](https://img.shields.io/badge/license-MIT-1a1a18?style=flat-square)](LICENSE)
@@ -95,14 +95,16 @@ Cloud / CI 虚拟机往往不跑桌面镜像，无法证明 Chromium 是活的�
 | 重置凭证 | 重置该成员密码，其会话同时失效 |
 | 收回权限 | 停用或删除成员，在线会话立即断开 |
 | 查看占用 | 机器卡片按账号显示谁正在使用；「团队」页只作信息展示 |
-| 断开席位 | 在占用中的账号卡片上点「断开」，对方登录失效并离开桌面，需重新登录。账号还在 |
+| 断开席位 | 在占用中的账号卡片上点「断开」，只撤掉**对方**的 VNC 或分屏标签，其他人的标签和容器都还在。对方需重新登录。账号还在 |
 | 删除额外账号 | 在面板添加的卡片上点「删除」，拆除容器并清掉 `./data/<id>`，再添加是干净的。内置 a / b 不能删 |
 
 密码以逐用户加盐的 scrypt 哈希存储。登录按 `ip|用户名` 限流（15 分钟 10 次），会话跨重启保留。
 
 ## 剪贴板
 
-剪贴板在本机和桌面之间是双向的，文字和截图都可以。
+VNC（首次登录）路径上，剪贴板在本机和桌面之间是双向的，文字和截图都可以。
+
+分屏席位不能走那条 X11 剪贴板中继——整台桌面只有一块剪贴板，无法按标签页隔离。v1 用 CDP 把文字贴进当前标签、读取该页选区（页面允许时也读页内剪贴板）。分屏里暂不支持粘贴图片。
 
 ## 分享与记忆隔离
 
@@ -120,6 +122,7 @@ Cloud / CI 虚拟机往往不跑桌面镜像，无法证明 Chromium 是活的�
 | --- | --- |
 | `AUTH_PASSWORD` | 可选：预设管理员密码，留空走首次访问向导 |
 | `INSTANCES` | compose 内置席位（`a,b`）。额外账号在面板里添加 |
+| `TAB_SEATS_MAX` | 每个账号在首位占用者之外，同时打开的 chatgpt.com 分屏标签上限（默认 `3`，范围 1–8）。约 45 秒没有心跳的空闲标签会被关掉 |
 | `BIND_ADDR` | 网关监听地址；走隧道时填 `127.0.0.1`，内网则填局域网或 VPN 地址 |
 | `PROXY_URL_A`、`PROXY_URL_B` | 按账号出口代理的默认值；「设置」页里逐行保存或「全部应用」优先且立即生效 |
 | `PROXY_URL` | 所有账号共用的默认代理 |
@@ -128,11 +131,26 @@ Cloud / CI 虚拟机往往不跑桌面镜像，无法证明 Chromium 是活的�
 
 「设置」页的「全部应用」会把同一个地址写到每个 ChatGPT 账号，并走与逐行保存相同的即时下发（clipd / `--proxy-server`，浏览器会重启）。保存过的地址会留在上方，点一下即可再用，不用重新输入。
 
+## 同时进入：分屏席位
+
+一个 ChatGPT 账号仍然是一台桌面容器、一份 Chromium profile（`--user-data-dir=/config/chromium`）。账号登录之后，两个人不该再共用一只 VNC 鼠标。
+
+- 还没有 ChatGPT cookie 时，走原来的 KasmVNC，方便主人先登录。
+- 登录之后，第一个人仍用那扇 VNC 窗口。再有人打开同一张卡片，会在**同一只** Chromium 里新开一个 chatgpt.com 标签。网关只推这一页的像素（CDP `Page.startScreencast`），指针和键盘走 CDP `Input`。对方看不到标签栏，也看不到别人的 target。
+- 卡片上的「断开」按人生效：只关掉那个人的标签（或 VNC），不杀别人的标签，也不停容器。
+- 上限：`TAB_SEATS_MAX`（默认 3 个分屏，另加第一个 VNC）。大约 45 秒没有心跳的空闲标签会被关掉。
+- ChatGPT 自己的侧栏仍可能列出别人的对话。页面协助仍在成员第一次进入时挂到**他的**标签上。
+- 去掉了 `--kiosk`，否则开不了第二标签。多出来的窗口停在屏幕外；成员看到的是页面视口，不是浏览器外壳。
+
+Cloud / CI 虚拟机跑不了真实桌面镜像。单元测试覆盖席位分配、看不到别人的 target、断开其中一个标签、以及占用上限。请在 phoenix 上确认：同一个已登录账号，两个人各自只看到自己的标签。
+
 ## 架构
 
 ```
 浏览器 ──▶ gateway (:36090) ──▶ desktop-a / desktop-b / 额外桌面
-           登录 · 选账号 · 团队      Chromium --kiosk chatgpt.com
+           登录 · 选账号 · 团队      每个账号一份 Chromium profile
+                                     ├─ 首次登录 / 第一人：KasmVNC
+                                     └─ 后来的人：CDP 分屏（只推页面像素）
 ```
 
 网关是唯一发布的端口。VNC 与 Chromium DevTools 留在容器网络里，从外部不可达。状态存在 `./data/`（Chromium profile）和 `./data-panel/`（成员、会话、设置），两者都被 gitignore，不出本机。

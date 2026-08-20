@@ -6,7 +6,7 @@
 
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED?style=flat-square&logo=docker&logoColor=white)](docker-compose.yml)
 [![Node.js](https://img.shields.io/badge/node.js-22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](gateway/)
-[![Chromium](https://img.shields.io/badge/chromium-kiosk-4587F3?style=flat-square&logo=googlechrome&logoColor=white)](docker/)
+[![Chromium](https://img.shields.io/badge/chromium-tab_seats-4587F3?style=flat-square&logo=googlechrome&logoColor=white)](docker/)
 [![KasmVNC](https://img.shields.io/badge/kasmvnc-web_desktop-5257CF?style=flat-square)](https://kasmweb.com/kasmvnc)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-yes-178F5F?style=flat-square)](Deploy.md)
 [![License](https://img.shields.io/badge/license-MIT-1a1a18?style=flat-square)](LICENSE)
@@ -95,14 +95,16 @@ Members are managed on the **Team** page, which only the administrator sees.
 | Rotate a credential | Reset that member's password; their sessions are revoked |
 | Remove access | Disable or delete the member; live sessions drop immediately |
 | See who is using what | Machine cards show live presence per account; Team lists occupancy as information |
-| Disconnect a live seat | On a live account card, **断开** revokes that member's login and drops the desktop; they sign in again. The member stays |
+| Disconnect a live seat | On a live account card, **断开** revokes that member's login and drops **their** VNC or tab seat; other members on the same account keep their tab. The container stays up. They sign in again. The member stays |
 | Delete an extra account | On a panel-created card, **删除** stops the container and wipes `./data/<id>` so a re-add is clean. Built-in `a` / `b` stay |
 
 Passwords are stored as per-user salted scrypt hashes. Sign-in is rate limited per `ip|username` (10 attempts per 15 minutes), and sessions survive a restart.
 
 ## Clipboard
 
-The clipboard is two-way between your machine and the desk. Text and screenshots both work.
+The clipboard is two-way between your machine and the desk on the VNC (first-login) path. Text and screenshots both work there.
+
+Tab seats cannot use that X11 clip relay — it is one clipboard for the whole desktop, not one per tab. v1 pastes text into the focused tab via CDP and copies the tab's selection (or the page clipboard when the page allows it). Images are not pasted on tab seats.
 
 ## Sharing and memory isolation
 
@@ -120,6 +122,7 @@ Everything lives in `.env` — the commented [`.env.example`](.env.example) is t
 | --- | --- |
 | `AUTH_PASSWORD` | Optional: pre-seed the administrator password; leave empty to use the first-visit wizard |
 | `INSTANCES` | Built-in compose seats (`a,b`). Extra desks are added in the panel |
+| `TAB_SEATS_MAX` | Concurrent chatgpt.com tab seats per account after the first occupant (default `3`, range 1–8). Idle tabs close after ~45s without a presence beat |
 | `BIND_ADDR` | Address the gateway publishes on; `127.0.0.1` when tunneling, LAN or VPN address on a private network |
 | `PROXY_URL_A`, `PROXY_URL_B` | Default per-account proxy; Settings (per desk or Apply to all) take precedence and apply immediately |
 | `PROXY_URL` | Default proxy shared by every account |
@@ -128,11 +131,26 @@ A proxy is only needed when the server cannot reach ChatGPT directly (for exampl
 
 On **Settings**, **Apply to all** writes the same address to every ChatGPT desk and pushes it live the same way as saving one row (clipd / `--proxy-server`, Chromium restarts). Addresses you have saved stay as chips so you can pick one again without retyping.
 
+## Concurrent tab seats
+
+One ChatGPT account is still one desktop container and one Chromium profile (`--user-data-dir=/config/chromium`). Two members must not share one VNC mouse after the account is signed in.
+
+- First-time ChatGPT login (no session cookies yet) uses the existing KasmVNC path so the owner can sign in.
+- After login, the first occupant still uses that VNC window. Anyone else who opens the same card gets a new `chatgpt.com` tab in the same Chromium. The gateway streams **that tab only** (CDP `Page.startScreencast`) and injects pointer/keyboard with CDP `Input`. The member never sees the tab strip or another seat's target.
+- **断开** on the account card is per-seat: it drops that member's tab (or VNC) without killing the other tab or the container.
+- Cap: `TAB_SEATS_MAX` (default 3 tab seats on top of the first VNC occupant). An idle tab seat is closed after about 45 seconds without a presence beat.
+- ChatGPT's own sidebar may still list the other member's chats. Page assist still attaches to the member's tab when they first enter.
+- `--kiosk` is off so extra tabs can be created. Extra windows are parked off-screen; members see the page viewport, not browser chrome.
+
+A Cloud / CI VM cannot run the real desktop image. Unit tests cover seat assignment, target isolation, disconnect-one-tab, and the occupancy cap. Phoenix should confirm two members on one signed-in account each see only their tab.
+
 ## Architecture
 
 ```
 browser ──▶ gateway (:36090) ──▶ desktop-a / desktop-b / extra desks
-            login · picker · team    Chromium --kiosk chatgpt.com
+            login · picker · team    one Chromium profile per account
+                                     ├─ first login / first occupant: KasmVNC
+                                     └─ extra members: CDP tab seat (page pixels only)
 ```
 
 The gateway is the only published port. VNC and Chromium DevTools stay on the container network and are unreachable from outside. State lives in `./data/` (Chromium profiles) and `./data-panel/` (members, sessions, settings); both are git-ignored and never leave the host.

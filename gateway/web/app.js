@@ -21,7 +21,7 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, proxyPresets: [], view: "home", deskId: null, err: "", modal: false, manage: null, rename: null, create: false, setup: false, boot: true };
+const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, proxyPresets: [], view: "home", deskId: null, deskMode: "vnc", seatId: null, err: "", modal: false, manage: null, rename: null, create: false, setup: false, boot: true };
 
 function assistOn() {
   return !!state.settings?.assist;
@@ -174,7 +174,7 @@ function renderHome() {
   const name = esc(state.me?.username || "");
   const head = `<header class="page-head">
     <h1 class="display">${greet()}，${name}</h1>
-    <p class="hint">${state.desks.length ? "选择一个 ChatGPT 账号开始使用。" : "还没有可使用的账号，请联系管理员开通。"}</p>
+    <p class="hint">${state.desks.length ? "选择一个 ChatGPT 账号开始使用。已登录后，第二个人进入会拿到自己的标签页，看不到对方的画面。" : "还没有可使用的账号，请联系管理员开通。"}</p>
   </header>`;
   const isAdmin = state.me?.role === "admin";
   const cards = state.desks
@@ -388,6 +388,7 @@ function renderSettings() {
       <div class="assist-note">
         <b>说明</b>
         <p><b>分享</b> — 关掉时，在 ChatGPT 页面里自己点 Share 并复制，链接会经剪贴板落到本机。打开后，顶栏多一个「分享」按钮，由网关代点，链接直接给你。</p>
+        <p><b>分屏席位</b> — 账号已登录且有人在用时，后来的人进入同一张卡片会打开新的 chatgpt.com 标签页，只看到自己那一页。ChatGPT 侧栏仍可能列出别人的对话。每个账号最多同时 3 个分屏席位（可用 TAB_SEATS_MAX 调整，1–8）。</p>
         <p><b>记忆隔离</b> — 打开后，成员第一次进入某个账号，会自动进入（或创建）一个以其用户名命名的 ChatGPT 项目，并设为仅项目内记忆。对话不读写账号的全局记忆。</p>
         <p><b>案例</b> — ada 和 bob 共用「账号A」。ada 第一次打开时进入项目「ada」，对话只写进这个项目、不进账号的全局记忆；bob 进的是「bob」。两人仍在同一个 ChatGPT 账号里，记忆互不影响。</p>
       </div>
@@ -395,7 +396,7 @@ function renderSettings() {
     <section class="panel">
       <div class="panel-head">
         <b>复制粘贴</b>
-        <em>本机和桌面之间的复制粘贴是双向的，平时无需额外操作。</em>
+        <em>VNC 首次登录时，本机和桌面之间的复制粘贴是双向的。分屏席位只做当前标签页的文字粘贴与选区复制；剪贴板中继无法按标签页隔离，图片粘贴在分屏里暂不可用。</em>
       </div>
     </section>
     <section class="panel">
@@ -509,7 +510,13 @@ function renderDesk() {
   const d = state.desks.find((x) => x.id === state.deskId);
   const vs = people(state.deskId);
   const names = vs.length ? vs.map((v) => v.username).join("、") : "";
+  const tab = state.deskMode === "tab";
   const src = `/vnc/index.html?autoconnect=1&path=websockify&resize=remote&reconnect=true&reconnect_delay=2000&clipboard_up=true&clipboard_down=true&clipboard_seamless=true`;
+  const surface = !state.seatId
+    ? ""
+    : tab
+      ? `<canvas id="seat-cast" class="seat-cast" tabindex="0" aria-label="ChatGPT"></canvas>`
+      : `<iframe src="${src}" allow="clipboard-read; clipboard-write; autoplay; microphone"></iframe>`;
   return `<div class="stage">
     <div class="chrome">
       <a class="back" href="#/">${ICO.back}<span>退出</span></a>
@@ -525,7 +532,7 @@ function renderDesk() {
     </div>
     <div class="frame">
       <div class="frame-wait" id="frame-wait">${MARK}</div>
-      <iframe src="${src}" allow="clipboard-read; clipboard-write; autoplay; microphone"></iframe>
+      ${surface}
     </div>
   </div>`;
 }
@@ -547,6 +554,17 @@ function render() {
     return;
   }
   if (state.view === "desk") {
+    if (state.deskId && !state.seatId && state.me && !state._opening) {
+      state._opening = true;
+      openDesk(state.deskId)
+        .catch((err) => {
+          toast(err.message || "无法进入");
+          setHash("/");
+        })
+        .finally(() => {
+          state._opening = false;
+        });
+    }
     root.innerHTML = renderDesk();
     bindDesk();
     return;
@@ -582,12 +600,15 @@ function stopPeek() {
 
 function dropPresence() {
   stopPeek();
+  stopSeatCast();
   if (!state.me) return;
   const uid = state.me.username;
   for (const id of Object.keys(state.presence)) {
     state.presence[id] = (state.presence[id] || []).filter((v) => v.username !== uid);
   }
   api("/api/presence/leave", { method: "POST", body: {} }).catch(() => {});
+  state.deskMode = "vnc";
+  state.seatId = null;
 }
 
 function isShareLink(text) {
@@ -609,24 +630,166 @@ async function adoptDeskText(text, quiet) {
   return true;
 }
 
+let seatWs = null;
+let seatResize = null;
+
+function stopSeatCast() {
+  if (seatWs) {
+    try {
+      seatWs.close();
+    } catch {
+      /* ignore */
+    }
+    seatWs = null;
+  }
+  if (seatResize && typeof ResizeObserver !== "undefined") {
+    try {
+      seatResize.disconnect();
+    } catch {
+      /* ignore */
+    }
+    seatResize = null;
+  }
+}
+
+function bindSeatCast() {
+  const canvas = $("#seat-cast");
+  const wait = $("#frame-wait");
+  if (!canvas || !state.seatId) return;
+  stopSeatCast();
+  canvas.focus();
+  const ctx = canvas.getContext("2d");
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/seats/${state.seatId}`);
+  seatWs = ws;
+  const hide = () => wait?.classList.add("gone");
+  let view = { width: canvas.clientWidth || 1280, height: canvas.clientHeight || 800 };
+
+  const send = (obj) => {
+    if (ws.readyState === 1) ws.send(JSON.stringify(obj));
+  };
+  const sendSize = () => {
+    const r = canvas.parentElement?.getBoundingClientRect() || canvas.getBoundingClientRect();
+    view = { width: Math.max(320, Math.round(r.width)), height: Math.max(320, Math.round(r.height)) };
+    send({ type: "size", width: view.width, height: view.height });
+  };
+  const point = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return {
+      x: ((e.clientX - r.left) / (r.width || 1)) * view.width,
+      y: ((e.clientY - r.top) / (r.height || 1)) * view.height,
+    };
+  };
+  const mods = (e) => (e.altKey ? 1 : 0) + (e.ctrlKey ? 2 : 0) + (e.metaKey ? 4 : 0) + (e.shiftKey ? 8 : 0);
+
+  ws.onopen = () => {
+    sendSize();
+    setTimeout(hide, 400);
+  };
+  ws.onmessage = (ev) => {
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+    if (msg.type === "error") {
+      toast(msg.error || "分屏中断");
+      return;
+    }
+    if (msg.type !== "frame" || !msg.data) return;
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+      hide();
+    };
+    img.src = `data:image/jpeg;base64,${msg.data}`;
+  };
+  ws.onclose = () => {
+    if (state.view === "desk" && state.deskMode === "tab" && seatWs === ws) {
+      toast("分屏已断开");
+    }
+  };
+
+  canvas.onpointerdown = (e) => {
+    canvas.focus();
+    canvas.setPointerCapture?.(e.pointerId);
+    const p = point(e);
+    send({ type: "mouse", event: "mousePressed", x: p.x, y: p.y, button: e.button === 2 ? "right" : "left", clickCount: 1, modifiers: mods(e) });
+  };
+  canvas.onpointerup = (e) => {
+    const p = point(e);
+    send({ type: "mouse", event: "mouseReleased", x: p.x, y: p.y, button: e.button === 2 ? "right" : "left", clickCount: 1, modifiers: mods(e) });
+  };
+  canvas.onpointermove = (e) => {
+    const p = point(e);
+    send({ type: "mouse", event: "mouseMoved", x: p.x, y: p.y, button: "none", modifiers: mods(e) });
+  };
+  canvas.onwheel = (e) => {
+    e.preventDefault();
+    const p = point(e);
+    send({ type: "mouse", event: "mouseWheel", x: p.x, y: p.y, button: "none", deltaX: e.deltaX, deltaY: e.deltaY, modifiers: mods(e) });
+  };
+  canvas.oncontextmenu = (e) => e.preventDefault();
+  canvas.onkeydown = (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.code === "KeyV" || e.code === "KeyC")) return;
+    e.preventDefault();
+    send({ type: "key", event: "keyDown", key: e.key, code: e.code, modifiers: mods(e) });
+  };
+  canvas.onkeyup = (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.code === "KeyV" || e.code === "KeyC")) return;
+    send({ type: "key", event: "keyUp", key: e.key, code: e.code, modifiers: mods(e) });
+  };
+
+  if (typeof ResizeObserver !== "undefined") {
+    seatResize = new ResizeObserver(() => sendSize());
+    seatResize.observe(canvas.parentElement || canvas);
+  }
+}
+
+async function onTabPaste(e) {
+  if (state.view !== "desk" || state.deskMode !== "tab" || !e.clipboardData) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const text = e.clipboardData.getData("text/plain");
+  if (!text) {
+    toast("分屏席位暂不支持粘贴图片");
+    return;
+  }
+  setChip("pasting");
+  const ok = await sendDeskPaste(text, "text/plain; charset=utf-8");
+  if (ok) setChip("text", text);
+  else setChip("waiting");
+  toast(ok ? "已粘贴" : "文字没贴进去");
+}
+
 function bindDesk() {
   const wait = $("#frame-wait");
   const iframe = $(".frame iframe");
-  if (!iframe) return;
+  const canvas = $("#seat-cast");
   const hide = () => wait?.classList.add("gone");
-  iframe.addEventListener(
-    "load",
-    () => {
-      try {
-        bindClipboard(iframe);
-      } catch {
-        /* clipboard is optional; never block the desktop */
-      }
-      setTimeout(hide, 400);
-    },
-    { once: true },
-  );
-  setTimeout(hide, 8000);
+  if (canvas) {
+    bindSeatCast();
+    bindTabClipboard();
+  } else if (iframe) {
+    iframe.addEventListener(
+      "load",
+      () => {
+        try {
+          bindClipboard(iframe);
+        } catch {
+          /* clipboard is optional; never block the desktop */
+        }
+        setTimeout(hide, 400);
+      },
+      { once: true },
+    );
+    setTimeout(hide, 8000);
+  } else {
+    return;
+  }
   lastPeeked = "";
   setChip();
   const chip = $("#clip-chip");
@@ -893,8 +1056,28 @@ async function ensureWorkspace() {
   }
 }
 
+function bindTabClipboard() {
+  if (document.documentElement.dataset.gpcTabClip === "1") return;
+  document.documentElement.dataset.gpcTabClip = "1";
+  const isCopyChord = (e) =>
+    (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.code === "KeyC" || e.key === "c" || e.key === "C");
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (state.view !== "desk" || state.deskMode !== "tab") return;
+      if (!isCopyChord(e)) return;
+      e.preventDefault();
+      copyFromDesk().catch(() => {});
+    },
+    true,
+  );
+  document.addEventListener("paste", onTabPaste, true);
+}
+
 async function openDesk(id) {
-  await api(`/api/desks/${id}/open`, { method: "POST" });
+  const r = await api(`/api/desks/${id}/open`, { method: "POST" });
+  state.deskMode = r.mode || "vnc";
+  state.seatId = r.seat?.id || null;
   setHash(`/desk/${id}`);
 }
 

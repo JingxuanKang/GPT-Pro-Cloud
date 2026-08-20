@@ -32,11 +32,17 @@ EOF
 fi
 
 # 无任务栏：最小化 = 黑屏。每 2s 把不可见窗口拉回来。
+# Extra tab-seat windows are parked at X <= -1000 by the gateway (CDP). Leave them there.
 (
     while sleep 2; do
         all=$(xdotool search --name '.+' 2>/dev/null) || continue
         vis=$(xdotool search --onlyvisible --name '.+' 2>/dev/null)
         for w in ${all}; do
+            geom=$(xdotool getwindowgeometry --shell "${w}" 2>/dev/null) || continue
+            x=$(printf '%s\n' "${geom}" | awk -F= '/^X=/{print $2}')
+            if [ -n "${x}" ] && [ "${x}" -le -1000 ] 2>/dev/null; then
+                continue
+            fi
             printf '%s\n' "${vis}" | grep -qx "${w}" || xdotool windowactivate "${w}" 2>/dev/null || true
         done
     done
@@ -56,13 +62,16 @@ while true; do
         PROXY_FLAG="--proxy-server=${PROXY_URL}"
         echo "[autostart] proxy-server=${PROXY_URL}"
     fi
+    # No --kiosk: kiosk + --app blocks extra chatgpt.com tabs. Tab seats use
+    # Target.createTarget (new window, parked off-screen). Members stream the
+    # page viewport via CDP, so they never see the tab strip. First-time login
+    # still uses this primary --app window over VNC.
     echo "[autostart] 启动 Chromium → ${START_URL}"
     /usr/bin/chromium \
         --no-sandbox \
         --test-type \
         --no-first-run \
         --no-default-browser-check \
-        --kiosk \
         --start-fullscreen \
         --start-maximized \
         --password-store=basic \
