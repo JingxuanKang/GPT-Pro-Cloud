@@ -20,14 +20,29 @@ Cloud / CI 虚拟机通常不跑桌面镜像。请在真实 Docker 宿主机上�
 
 ## 启动
 
+仓库公开。默认路径是 clone（或只 curl `docker-compose.yml`）+ `cp .env.example .env` + 拉取 GHCR 镜像，不在本机 `--build`。
+
 ```bash
+# clone 后：
 cp .env.example .env
 # AUTH_PASSWORD 可选：留空则首次访问走向导创建管理员
 # BIND_ADDR：内网填局域网/VPN 地址；走 Cloudflare Tunnel 时填 127.0.0.1
 ./scripts/up.sh
+# 等价于 docker compose pull && docker compose up -d
 ```
 
-打开 `http://127.0.0.1:36090`（或内网地址）完成管理员。公网必须先有管理员再开隧道，见下方。
+只拿 compose 时：
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/JingxuanKang/GPT-Pro-Cloud/main/docker-compose.yml
+curl -fsSLo .env.example https://raw.githubusercontent.com/JingxuanKang/GPT-Pro-Cloud/main/.env.example
+cp .env.example .env
+docker compose pull && docker compose up -d
+```
+
+镜像名：`ghcr.io/jingxuankang/gpt-pro-cloud-gateway:latest`、`ghcr.io/jingxuankang/gpt-pro-cloud-desktop:latest`。pull 失败就本地 `docker compose up -d --build`，或等 `main` 上的发布工作流推完镜像。
+
+打开 `http://127.0.0.1:36090`（或内网地址）完成管理员。每个桌面里的 ChatGPT 登录仍要你自己做一次，没有自动化。公网必须先有管理员再开隧道，见下方。
 
 ## 公网：Cloudflare Tunnel
 
@@ -60,6 +75,6 @@ docker logs -f gpt-pro-cloud-<id>   # 面板里加出来的额外桌面
 
 ## 更新与回滚
 
-更新：开发机 commit → push → 部署机 `git pull && docker compose up -d --build`。
+更新：部署机 `git pull && ./scripts/up.sh`（拉取 GHCR `:latest`）。开发机改代码仍用 `docker compose up -d --build`。
 
-回滚：部署机 `git checkout <旧 commit> && docker compose up -d --build`。`data/` 与 `data-panel/` 不随代码回滚，登录态与成员配置保持不变。
+回滚：部署机 `git checkout <旧 commit>` 后，用该 commit 的 compose 再 `docker compose pull && docker compose up -d`；若当时镜像不可用，则 `docker compose up -d --build`。`data/` 与 `data-panel/` 不随代码回滚，登录态与成员配置保持不变。
