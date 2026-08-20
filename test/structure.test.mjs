@@ -226,6 +226,7 @@ describe("standalone product", () => {
     assert.match(assistBlock, /项目页锁定/);
     assert.match(assistBlock, /留在自己的项目/);
     assert.match(assistBlock, /页面体验锁定/);
+    assert.match(assistBlock, /不能再开 Chrome 标签/);
     assert.doesNotMatch(assistBlock, /完全不可能|无法打开别人的项目/);
     assert.doesNotMatch(assistBlock, /复制粘贴/);
     const css = readFileSync(resolve(root, "gateway/web/app.css"), "utf8");
@@ -329,6 +330,12 @@ describe("standalone product", () => {
     assert.match(jail, /Page\.navigate/);
     assert.match(jail, /auth\.openai\.com/);
     assert.match(jail, /g-p-/);
+    assert.match(jail, /isBlockedJailChord/);
+    assert.match(jail, /isCopyOrPasteChord/);
+    assert.match(jail, /shouldForwardSeatKey/);
+    assert.match(jail, /setWindowOpenHandler/);
+    assert.match(jail, /Target\.closeTarget/);
+    assert.match(jail, /jailHotkeyScript/);
     assert.doesNotMatch(jail, /completely impossible/i);
     assert.match(gw, /createSeatJailRegistry/);
     assert.match(gw, /seatStartUrl/);
@@ -342,6 +349,16 @@ describe("standalone product", () => {
     const screencast = readFileSync(resolve(root, "lib/screencast.mjs"), "utf8");
     assert.match(screencast, /armSeatJail/);
     assert.match(screencast, /projectUrl/);
+    assert.match(screencast, /isBlockedJailChord/);
+    assert.match(ui, /isSeatEscapeChord/);
+    assert.match(ui, /不能再开 Chrome 标签/);
+    assert.match(readme, /cannot open another Chrome tab/i);
+    assert.match(zh, /不能再开 Chrome 标签/);
+    const wm = readFileSync(resolve(root, "docker/update-autostart.sh"), "utf8");
+    assert.match(wm, /gpc-jail-keys/);
+    assert.match(wm, /C-T/);
+    assert.match(wm, /F12/);
+    assert.match(gw, /createParkedChatGPTTab/);
     assert.match(readme, /keeps each member in their own project/i);
     assert.match(readme, /in-page lock/);
     assert.match(readme, /g\/g-p-/);

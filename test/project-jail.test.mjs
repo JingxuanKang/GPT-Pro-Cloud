@@ -18,6 +18,11 @@ import {
   shouldBlockProjectClick,
   shouldHideOtherProject,
   armSeatJail,
+  isBlockedJailChord,
+  isCopyOrPasteChord,
+  shouldCloseExtraTarget,
+  shouldForwardSeatKey,
+  jailHotkeyScript,
 } from "../lib/project-jail.mjs";
 
 const ADA = "https://chatgpt.com/g/g-p-aaa111-ada/project";
@@ -134,6 +139,63 @@ describe("injected jail script", () => {
     assert.match(src, /auth\.openai\.com/);
     assert.doesNotMatch(src, /completely impossible/i);
     assert.equal(projectJailScript(""), "void 0");
+    const keys = jailHotkeyScript();
+    assert.match(keys, /window\.open/);
+    assert.match(keys, /F12/);
+    assert.match(keys, /KeyT|letter/);
+  });
+});
+
+describe("escape hotkeys and extra targets", () => {
+  const cmd = (code, extra = {}) => ({ code, key: extra.key, modifiers: 2, ...extra });
+  const meta = (code) => ({ code, modifiers: 4 });
+
+  it("blocks new-tab / window / address-bar / devtools chords and keeps C/V", () => {
+    const blocked = [
+      cmd("KeyT"),
+      meta("KeyT"),
+      cmd("KeyN"),
+      cmd("KeyL"),
+      cmd("KeyW"),
+      { code: "Tab", key: "Tab", modifiers: 2 },
+      { code: "Tab", key: "Tab", modifiers: 2 + 8 },
+      { code: "KeyT", modifiers: 2 + 8 },
+      { code: "KeyD", modifiers: 1 },
+      { code: "F6", key: "F6", modifiers: 0 },
+      { code: "F12", key: "F12", modifiers: 0 },
+      { code: "KeyI", modifiers: 2 + 8 },
+      { code: "KeyJ", modifiers: 2 + 8 },
+      { code: "KeyC", modifiers: 2 + 8 },
+      cmd("KeyU"),
+    ];
+    for (const msg of blocked) {
+      assert.equal(isBlockedJailChord(msg), true, JSON.stringify(msg));
+      assert.equal(shouldForwardSeatKey(msg), false, JSON.stringify(msg));
+    }
+    assert.equal(isCopyOrPasteChord(cmd("KeyC")), true);
+    assert.equal(isCopyOrPasteChord(cmd("KeyV")), true);
+    assert.equal(isBlockedJailChord(cmd("KeyC")), false);
+    assert.equal(isBlockedJailChord(cmd("KeyV")), false);
+    assert.equal(shouldForwardSeatKey(cmd("KeyC")), true);
+    assert.equal(isBlockedJailChord({ code: "Tab", key: "Tab", modifiers: 0 }), false);
+    assert.equal(isBlockedJailChord({ code: "KeyT", key: "t", modifiers: 0 }), false);
+    assert.equal(isBlockedJailChord({ code: "KeyA", modifiers: 2 }), false);
+  });
+
+  it("closes a page target opened from this seat and leaves other seats alone", () => {
+    const created = {
+      method: "Target.targetCreated",
+      params: { targetInfo: { targetId: "t-popup", type: "page", openerId: "t-ada", url: "https://chatgpt.com/" } },
+    };
+    assert.equal(shouldCloseExtraTarget(created, "t-ada"), true);
+    assert.equal(shouldCloseExtraTarget(created, "t-bob"), false);
+    assert.equal(
+      shouldCloseExtraTarget(
+        { method: "Target.targetCreated", params: { targetInfo: { targetId: "t-bob", type: "page" } } },
+        "t-ada",
+      ),
+      false,
+    );
   });
 });
 
@@ -156,6 +218,7 @@ describe("CDP Page.navigate lock", () => {
       },
       sessionId: "s1",
       homeUrl: ADA,
+      targetId: "t-ada",
     });
     assert.equal(jail.armed, true);
     assert.equal(jail.home, ADA);
@@ -164,6 +227,10 @@ describe("CDP Page.navigate lock", () => {
       true,
     );
     assert.equal(calls.some((c) => c.method === "Page.enable"), true);
+    assert.equal(
+      calls.some((c) => c.method === "Page.setWindowOpenHandler" && c.params.action === "deny"),
+      true,
+    );
 
     const nav = {
       method: "Page.frameNavigated",
@@ -176,6 +243,15 @@ describe("CDP Page.navigate lock", () => {
     await Promise.resolve();
     assert.equal(
       calls.some((c) => c.method === "Page.navigate" && c.params.url === ADA),
+      true,
+    );
+    listeners[0]({
+      method: "Target.targetCreated",
+      params: { targetInfo: { targetId: "t-popup", type: "page", openerId: "t-ada" } },
+    });
+    await Promise.resolve();
+    assert.equal(
+      calls.some((c) => c.method === "Target.closeTarget" && c.params.targetId === "t-popup"),
       true,
     );
   });
@@ -219,12 +295,22 @@ describe("CDP Page.navigate lock", () => {
     assert.equal(calls.filter((c) => c.method === "Page.navigate").length, before);
   });
 
-  it("stays unarmed without a project URL so the CDP-off / no-jail path is unchanged", async () => {
+  it("still arms the escape lock without a project URL, and stays off without send", async () => {
+    const calls = [];
     const jail = await armSeatJail({
-      send: async () => ({}),
+      send: async (method, params) => {
+        calls.push({ method, params });
+        return {};
+      },
+      sessionId: "s1",
+      targetId: "t-1",
       homeUrl: "",
     });
-    assert.equal(jail.armed, false);
+    assert.equal(jail.armed, true);
     assert.equal(jail.home, "");
+    assert.equal(calls.some((c) => c.method === "Page.setWindowOpenHandler"), true);
+    assert.equal(calls.some((c) => c.method === "Page.addScriptToEvaluateOnNewDocument"), true);
+    const off = await armSeatJail({ homeUrl: ADA });
+    assert.equal(off.armed, false);
   });
 });
