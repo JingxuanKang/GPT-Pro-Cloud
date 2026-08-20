@@ -184,6 +184,7 @@ describe("standalone product", () => {
     assert.match(ui, /仅项目内记忆/);
     assert.match(ui, /顶栏多一个「分享」/);
     assert.match(ui, /复制粘贴/);
+    assert.match(ui, /账号A/);
     assert.doesNotMatch(ui, /老板号/);
     assert.doesNotMatch(ui, /互不可见/);
     assert.doesNotMatch(ui, /顶栏格子/);
