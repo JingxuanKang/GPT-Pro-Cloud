@@ -21,7 +21,7 @@ GPT-Pro Cloud is a Docker gateway and browser desktop for running signed-in Chat
 
 > **Disclaimer** — sharing a ChatGPT account between people may violate OpenAI's terms and policies. This repository only provides a self-hosting mechanism; whether and how you use it, and all consequences, are your own responsibility and unrelated to this repository.
 
-<img src="assets/screenshot-home.jpg" alt="The account picker showing two machine cards with live presence, an admin badge, and the team management entry" width="100%">
+<img src="assets/screenshot-home.jpg" alt="The account picker showing account cards with live presence, tab-seat usage and the admin entry" width="100%">
 
 Each account gets its own Chromium with a persistent profile. One gateway serves the login, the account picker, team management and the remote desktop — entirely in the browser.
 
@@ -69,7 +69,7 @@ Set `BIND_ADDR=127.0.0.1` in `.env` so the panel is not also published as plain 
 cloudflared tunnel --url http://127.0.0.1:36090
 ```
 
-Share the `https://` URL it prints. You sign in with the administrator you already created. Members use the gateway username and password from the Team page — not ChatGPT passwords.
+Share the `https://` URL it prints. You sign in with the administrator you already created. Members use the gateway username and password from the Admin page — not ChatGPT passwords.
 
 For a stable hostname, point a named tunnel at the same local port (that needs a domain on Cloudflare).
 
@@ -148,7 +148,7 @@ A Cloud / CI VM cannot run the real desktop image. Unit tests cover seat assignm
 
 ```
 browser ──▶ gateway (:36090) ──▶ desktop-a / desktop-b / extra desks
-            login · picker · team    one Chromium profile per account
+            login · picker · admin    one Chromium profile per account
                                      ├─ first login / first occupant: KasmVNC
                                      └─ extra members: CDP tab seat (page pixels only)
 ```
