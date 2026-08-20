@@ -10,6 +10,19 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 PORT = 18790
 MAX = 8 * 1024 * 1024
 
+# /usr/bin/chromium is a wrapper; the live process on Debian/Ubuntu is
+# /usr/lib/chromium/chromium. Matching only the wrapper leaves the old PID up
+# (phoenix: CDP toggle wrote .gpc-cdp but Chrome kept the CDP-off process).
+CHROMIUM_KILL_PATTERNS = (
+    "/usr/lib/chromium/chromium",
+    "--user-data-dir=/config/chromium",
+)
+
+
+def kill_chromium() -> None:
+    for pat in CHROMIUM_KILL_PATTERNS:
+        subprocess.run(["pkill", "-f", pat], check=False, timeout=5)
+
 
 def display() -> str:
     d = os.environ.get("DISPLAY")
@@ -142,7 +155,7 @@ class Handler(BaseHTTPRequestHandler):
                 except FileNotFoundError:
                     pass
             print(f"gpc-clipd proxy override={raw or '(default)'}", flush=True)
-            subprocess.run(["pkill", "-f", "/usr/bin/chromium"], check=False, timeout=5)
+            kill_chromium()
             self.send_response(204)
             self.end_headers()
             return
@@ -163,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("1\n" if on else "0\n")
             print(f"gpc-clipd cdp enable={int(on)}", flush=True)
-            subprocess.run(["pkill", "-f", "/usr/bin/chromium"], check=False, timeout=5)
+            kill_chromium()
             self.send_response(204)
             self.end_headers()
             return
