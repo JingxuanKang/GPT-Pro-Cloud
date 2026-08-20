@@ -141,6 +141,11 @@ describe("standalone product", () => {
     assert.match(gw, /projectOnboardScript/);
     assert.match(gw, /waitForDesk/);
     assert.match(gw, /kickOnboard/);
+    assert.match(gw, /lockSeatToProject/);
+    assert.match(gw, /pickNamedProjectHref/);
+    assert.match(gw, /listSeatProjectLinks/);
+    assert.match(gw, /navigateSeatToUrl/);
+    assert.doesNotMatch(gw, /const create = !users\.readyOn/);
     assert.match(gw, /deskCdpOn/);
     assert.match(gw, /\/api\/admin\/settings/);
     assert.match(ui, /data-cdp-toggle/);
@@ -319,6 +324,14 @@ describe("standalone product", () => {
     assert.match(chrome, /projectHref/);
     assert.match(chrome, /g-p-/);
     assert.match(chrome, /READ_PROJECT_URL/);
+    assert.match(chrome, /LIST_PROJECT_LINKS/);
+    assert.match(chrome, /listSeatProjectLinks/);
+    assert.match(chrome, /isConnected/);
+    assert.doesNotMatch(chrome, /if \(!visible\(el\) \|\| inCreateForm/);
+    assert.doesNotMatch(
+      chrome.slice(chrome.indexOf("LIST_PROJECT_LINKS"), chrome.indexOf("projectOnboardScript")),
+      /getClientRects/,
+    );
     const jail = readFileSync(resolve(root, "lib/project-jail.mjs"), "utf8");
     assert.match(jail, /bounceUrl/);
     assert.match(jail, /isAllowedJailUrl/);
@@ -336,6 +349,9 @@ describe("standalone product", () => {
     assert.match(jail, /setWindowOpenHandler/);
     assert.match(jail, /Target\.closeTarget/);
     assert.match(jail, /jailHotkeyScript/);
+    assert.match(jail, /slugifyProjectName/);
+    assert.match(jail, /pickNamedProjectHref/);
+    assert.match(jail, /navigateSeatToUrl/);
     assert.doesNotMatch(jail, /completely impossible/i);
     assert.match(gw, /createSeatJailRegistry/);
     assert.match(gw, /seatStartUrl/);

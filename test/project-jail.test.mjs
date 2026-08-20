@@ -13,8 +13,10 @@ import {
   jailNavUrl,
   parseChatGPTProjectUrl,
   projectJailScript,
+  pickNamedProjectHref,
   projectUrlFromOnboard,
   seatStartUrl,
+  slugifyProjectName,
   shouldBlockProjectClick,
   shouldHideOtherProject,
   armSeatJail,
@@ -127,6 +129,25 @@ describe("seat start URL and onboard capture", () => {
   it("reads a project URL from an onboard result", () => {
     assert.equal(projectUrlFromOnboard({ ok: true, url: ADA_CHAT }), ADA);
     assert.equal(projectUrlFromOnboard({ ok: true, action: "opened" }), "");
+  });
+
+  it("picks the named sidebar project even when projectReady was already true", () => {
+    assert.equal(slugifyProjectName("Test 1"), "test-1");
+    assert.equal(slugifyProjectName("test1"), "test1");
+    const links = [
+      { href: "https://chatgpt.com/g/g-p-aaa111-test1/project", text: "test1" },
+      { href: "https://chatgpt.com/g/g-p-bbb222-test2/project", text: "test2" },
+      { href: "https://chatgpt.com/g/g-p-ccc333-admin/project", text: "admin" },
+    ];
+    assert.equal(pickNamedProjectHref("test1", links), "https://chatgpt.com/g/g-p-aaa111-test1/project");
+    assert.equal(pickNamedProjectHref("test2", links), "https://chatgpt.com/g/g-p-bbb222-test2/project");
+    assert.equal(pickNamedProjectHref("admin", links), "https://chatgpt.com/g/g-p-ccc333-admin/project");
+    assert.equal(pickNamedProjectHref("test", links), "");
+    assert.equal(pickNamedProjectHref("test1", []), "");
+    assert.equal(
+      pickNamedProjectHref("ada", [{ href: ADA_CHAT, text: "Ada Lovelace" }]),
+      ADA,
+    );
   });
 });
 
@@ -293,6 +314,49 @@ describe("CDP Page.navigate lock", () => {
     });
     await Promise.resolve();
     assert.equal(calls.filter((c) => c.method === "Page.navigate").length, before);
+  });
+
+  it("bounces chatgpt.com to the project home and re-injects jail globals", async () => {
+    const calls = [];
+    const listeners = [];
+    const send = async (method, params) => {
+      calls.push({ method, params });
+      if (method === "Runtime.evaluate" && params?.expression === "location.href") {
+        return { result: { value: "https://chatgpt.com/" } };
+      }
+      return {};
+    };
+    const jail = await armSeatJail({
+      send,
+      on: (fn) => {
+        listeners.push(fn);
+        return () => {};
+      },
+      sessionId: "s1",
+      homeUrl: ADA,
+      targetId: "t-ada",
+    });
+    assert.equal(jail.armed, true);
+    assert.equal(
+      calls.some((c) => c.method === "Page.navigate" && c.params.url === ADA),
+      true,
+    );
+    assert.ok(
+      calls.some(
+        (c) =>
+          c.method === "Runtime.evaluate" &&
+          typeof c.params?.expression === "string" &&
+          c.params.expression.includes("__gpcProjectJail"),
+      ),
+    );
+    const before = calls.filter((c) => c.method === "Runtime.evaluate").length;
+    listeners[0]({
+      method: "Page.frameNavigated",
+      sessionId: "s1",
+      params: { frame: { url: ADA, parentId: undefined } },
+    });
+    await Promise.resolve();
+    assert.ok(calls.filter((c) => c.method === "Runtime.evaluate").length > before);
   });
 
   it("still arms the escape lock without a project URL, and stays off without send", async () => {

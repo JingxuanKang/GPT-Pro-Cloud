@@ -62,6 +62,13 @@ describe("users + presence", () => {
     const u = store.update(m.id, { projectDesk: "b" });
     assert.equal(u.projectDesks.b, true);
     assert.equal(store.readyOn(m.id, "b"), true);
+    assert.equal(store.projectUrlOn(m.id, "b"), "");
+    store.update(m.id, {
+      projectDesk: "b",
+      projectUrl: "https://chatgpt.com/g/g-p-ccc333-cara/project",
+    });
+    assert.equal(store.readyOn(m.id, "b"), true);
+    assert.equal(store.projectUrlOn(m.id, "b"), "https://chatgpt.com/g/g-p-ccc333-cara/project");
   });
 
   it("tracks who is on a desk", () => {

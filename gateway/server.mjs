@@ -10,11 +10,11 @@ import { createDockerClient, ensureDeskContainer, removeDeskContainer } from "..
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
 import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
-import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, sleep } from "../lib/chrome.mjs";
+import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
 import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, evaluateOnTarget, forgetDeskBrowser, targetExists } from "../lib/cdp.mjs";
-import { createSeatJailRegistry, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
+import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
 import { WebSocketServer } from "ws";
@@ -118,21 +118,53 @@ async function runOnboard(id, name, { create = true, targetId } = {}) {
   return last;
 }
 
+/**
+ * Persist the named project's URL even when projectReady is already true,
+ * navigate the seat there, and arm the jail. Do not skip because readyOn.
+ */
+async function lockSeatToProject(id, user, targetId) {
+  const name = String(user.username || "").trim();
+  const uid = user?.id;
+  if (!name || !uid) return { ok: false, error: "没有用户名" };
+  await waitForDesk(id, 45000, { targetId });
+  let home = "";
+  let action = "opened";
+  for (let i = 0; i < 3; i++) {
+    home = users.projectUrlOn(uid, id);
+    if (!home) {
+      const links = await withDeskCdp(id, () => listSeatProjectLinks(id, targetId));
+      home = pickNamedProjectHref(name, links);
+    }
+    if (!home) {
+      const r = await runOnboard(id, name, { create: true, targetId });
+      if (r?.ok) {
+        action = r.action || "opened";
+        home = await resolveOnboardUrl(id, r, targetId);
+        if (!home) {
+          const links = await withDeskCdp(id, () => listSeatProjectLinks(id, targetId));
+          home = pickNamedProjectHref(name, links);
+        }
+      }
+    }
+    if (home) break;
+    await sleep(1500);
+  }
+  if (!home) return { ok: false, error: "找不到项目" };
+  home = await rememberProjectUrl(uid, id, name, home);
+  if (!home) return { ok: false, error: "找不到项目" };
+  const seat = seats.ofUser(id, uid);
+  if (targetId) {
+    await withDeskCdp(id, () => navigateSeatToUrl(id, targetId, home)).catch(() => {});
+  }
+  if (seat) await armSeatProjectJail(seat, home);
+  return { ok: true, url: home, action };
+}
+
 function kickOnboard(id, user, targetId) {
   const name = String(user.username || "").trim();
   if (!name) return;
-  const uid = user.id;
-  const create = !users.readyOn(uid, id);
   const t = setTimeout(() => {
-    runOnboard(id, name, { create, targetId })
-      .then(async (r) => {
-        if (!r?.ok) return;
-        const url = await resolveOnboardUrl(id, r, targetId);
-        const home = await rememberProjectUrl(uid, id, name, url || r.url);
-        const seat = seats.ofUser(id, uid);
-        if (seat) await armSeatProjectJail(seat, home);
-      })
-      .catch(() => {});
+    lockSeatToProject(id, user, targetId).catch(() => {});
   }, ONBOARD_YIELD_MS);
   t.unref?.();
 }
@@ -624,14 +656,10 @@ async function handleApi(req, res, url, sess) {
     const name = String(sess.user.username || "").trim();
     if (!name) return json(res, 400, { error: "没有用户名" });
     try {
-      const create = !users.readyOn(sess.user.id, id);
       const tab = seats.ofUser(id, sess.user.id);
-      const r = await runOnboard(id, name, { create, targetId: tab?.targetId });
+      const r = await lockSeatToProject(id, sess.user, tab?.targetId);
       if (!r?.ok) return json(res, 400, { error: r?.error || "工作区还没准备好" });
-      const url = await resolveOnboardUrl(id, r, tab?.targetId);
-      const home = await rememberProjectUrl(sess.user.id, id, name, url || r.url);
-      if (tab) await armSeatProjectJail(tab, home);
-      return json(res, 200, { ok: true, name, action: r.action || "opened", created: r.action === "created", url: home || "" });
+      return json(res, 200, { ok: true, name, action: r.action || "opened", created: r.action === "created", url: r.url || "" });
     } catch (e) {
       const raw = e.message || "";
       const error = /chromium|ChatGPT 页面|无法连接|未就绪/i.test(raw) ? "工作区还没准备好" : raw || "工作区还没准备好";
