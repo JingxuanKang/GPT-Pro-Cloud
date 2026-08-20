@@ -104,9 +104,9 @@ Passwords are stored as per-user salted scrypt hashes. Sign-in is rate limited p
 
 ## Clipboard
 
-The clipboard is two-way between your machine and the desk on the VNC (first-login) path. Text and screenshots both work there.
+The clipboard is two-way between your machine and the desk on the exclusive VNC path. Text and screenshots both work there (gpc-clipd / xclip). That path does not need the debug port.
 
-Tab seats cannot use that X11 clip relay — it is one clipboard for the whole desktop, not one per tab. v1 pastes text into the focused tab via CDP and copies the tab's selection (or the page clipboard when the page allows it). Images are not pasted on tab seats.
+Tab seats exist only when multi-user / CDP is on for that account. They cannot use the X11 clip relay — it is one clipboard for the whole desktop, not one per tab. They paste text via CDP `Input.insertText` and images (png/jpeg/webp) via a synthetic `ClipboardEvent` on `document.activeElement`. Click the composer first; if nothing is focused the UI says to click the input. They never write the shared X11 clipboard.
 
 ## Sharing and memory isolation
 

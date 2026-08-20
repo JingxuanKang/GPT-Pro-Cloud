@@ -15,6 +15,7 @@ import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
 import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, evaluateOnTarget, forgetDeskBrowser, targetExists } from "../lib/cdp.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
+import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -468,16 +469,20 @@ async function handleApi(req, res, url, sess) {
     const ct = String(req.headers["content-type"] || "text/plain; charset=utf-8");
     const tab = seats.ofUser(id, sess.user.id);
     if (tab?.mode === "tab") {
-      if (!ct.startsWith("text/")) return json(res, 400, { error: "分屏席位暂不支持粘贴图片" });
+      const plan = tabPastePlan(ct, body);
+      if (plan.error) return json(res, plan.status || 400, { error: plan.error });
       try {
-        const text = body.toString("utf8");
         const attached = await attachSeatTarget(id, tab.targetId);
         try {
-          await attached.cdp.send("Input.insertText", { text: text.slice(0, 64 * 1024) }, attached.sessionId);
+          const out = await applyTabPastePlan(
+            (method, params) => attached.cdp.send(method, params, attached.sessionId),
+            plan,
+          );
+          if (!out.ok) return json(res, out.status || 400, { error: out.error || "无法粘贴" });
+          return json(res, 200, { ok: true, scoped: "tab", kind: out.kind });
         } finally {
           await attached.release();
         }
-        return json(res, 200, { ok: true, scoped: "tab" });
       } catch {
         return json(res, 502, { error: "无法粘贴" });
       }

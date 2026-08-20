@@ -24,6 +24,16 @@ import {
   targetIdFromJsonNew,
 } from "../lib/cdp.mjs";
 import { clientStreamMessage, keyEventParams, mouseEventParams, pointerToCdp } from "../lib/screencast.mjs";
+import {
+  TAB_PASTE_IMAGE_MAX,
+  TAB_PASTE_NEED_FOCUS,
+  applyTabPastePlan,
+  classifyTabPaste,
+  imagePasteExpression,
+  interpretTabPasteEvaluate,
+  tabPasteFromMessage,
+  tabPastePlan,
+} from "../lib/tab-paste.mjs";
 
 function user(id, username) {
   return { id, username };
@@ -411,5 +421,72 @@ describe("session cookies and input mapping", () => {
     const key = keyEventParams({ event: "keyDown", key: "a", code: "KeyA" });
     assert.equal(key.type, "keyDown");
     assert.equal(key.text, "a");
+  });
+});
+
+describe("tab-seat paste plumbing", () => {
+  it("classifies text, png/jpeg/webp, and rejects junk or oversized images", () => {
+    assert.equal(classifyTabPaste("text/plain; charset=utf-8", 12).kind, "text");
+    assert.equal(classifyTabPaste("image/png", 100).kind, "image");
+    assert.equal(classifyTabPaste("image/jpg", 100).mime, "image/jpeg");
+    assert.equal(classifyTabPaste("image/webp", 100).kind, "image");
+    assert.equal(classifyTabPaste("image/gif", 100).status, 400);
+    assert.equal(classifyTabPaste("image/png", TAB_PASTE_IMAGE_MAX + 1).status, 413);
+    assert.equal(classifyTabPaste("text/plain", 0).status, 400);
+  });
+
+  it("plans text as Input.insertText and images as a focused ClipboardEvent", () => {
+    const text = tabPastePlan("text/plain", Buffer.from("hello"));
+    assert.equal(text.method, "Input.insertText");
+    assert.equal(text.params.text, "hello");
+
+    const png = tabPastePlan("image/png", Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    assert.equal(png.method, "Runtime.evaluate");
+    const expr = png.params.expression;
+    assert.match(expr, /ClipboardEvent/);
+    assert.match(expr, /DataTransfer/);
+    assert.match(expr, /document\.activeElement/);
+    assert.match(expr, /isContentEditable/);
+    assert.match(expr, /TEXTAREA/);
+    assert.match(expr, /need-focus/);
+    assert.doesNotMatch(expr, /querySelector|prosemirror|composer|prompt-textarea|chatgpt\.com/i);
+
+    const fromWs = tabPasteFromMessage({ type: "paste", image: Buffer.from([1, 2, 3]).toString("base64"), mime: "image/jpeg" });
+    assert.equal(fromWs.kind, "image");
+    assert.equal(tabPasteFromMessage({ type: "paste", text: "hi" }).kind, "text");
+  });
+
+  it("maps a no-focus evaluate result to 点一下输入框再粘贴", () => {
+    const miss = interpretTabPasteEvaluate({ ok: false, error: "need-focus" });
+    assert.equal(miss.ok, false);
+    assert.equal(miss.error, TAB_PASTE_NEED_FOCUS);
+    assert.equal(miss.status, 400);
+    assert.equal(interpretTabPasteEvaluate({ ok: true, kind: "image" }).ok, true);
+  });
+
+  it("applyTabPastePlan sends insertText for text and evaluate for images", async () => {
+    const calls = [];
+    const send = async (method, params) => {
+      calls.push({ method, params });
+      if (method === "Runtime.evaluate") return { result: { value: { ok: true, kind: "image" } } };
+      return {};
+    };
+    const textOut = await applyTabPastePlan(send, tabPastePlan("text/plain", Buffer.from("abc")));
+    assert.equal(textOut.ok, true);
+    assert.equal(textOut.kind, "text");
+    assert.equal(calls[0].method, "Input.insertText");
+    assert.equal(calls[0].params.text, "abc");
+
+    const imgOut = await applyTabPastePlan(send, tabPastePlan("image/png", Buffer.from([9])));
+    assert.equal(imgOut.ok, true);
+    assert.equal(imgOut.kind, "image");
+    assert.equal(calls[1].method, "Runtime.evaluate");
+
+    const focusOut = await applyTabPastePlan(async () => ({ result: { value: { ok: false, error: "need-focus" } } }), {
+      kind: "image",
+      method: "Runtime.evaluate",
+      params: { expression: imagePasteExpression({ mime: "image/png", base64: "AA==" }) },
+    });
+    assert.equal(focusOut.error, TAB_PASTE_NEED_FOCUS);
   });
 });

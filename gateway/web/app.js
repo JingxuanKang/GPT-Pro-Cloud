@@ -453,7 +453,7 @@ function renderSettings() {
     <section class="panel">
       <div class="panel-head">
         <b>复制粘贴</b>
-        <em>在桌面画面里直接 ⌘C / ⌘V，双向生效。多人分屏时只支持文字，图片粘贴暂不可用。</em>
+        <em>在桌面画面里直接 ⌘C / ⌘V，双向生效。独占 VNC 走整桌剪贴板（文字和截图）。开启多人分屏后，分屏席位把文字和图片贴进当前输入框（先点一下输入框）。</em>
       </div>
     </section>
     <section class="panel">
@@ -813,16 +813,35 @@ async function onTabPaste(e) {
   if (state.view !== "desk" || state.deskMode !== "tab" || !e.clipboardData) return;
   e.preventDefault();
   e.stopPropagation();
+  for (const it of Array.from(e.clipboardData.items || [])) {
+    if (it.kind === "file" && /^image\/(png|jpeg|jpg|webp)$/i.test(it.type)) {
+      const f = it.getAsFile();
+      if (!f) continue;
+      const mime = it.type === "image/jpg" ? "image/jpeg" : it.type;
+      const buf = await f.arrayBuffer();
+      setChip("pasting");
+      toast("pasting", "image");
+      const r = await sendDeskPaste(buf, mime);
+      if (r.ok) {
+        setChip("image");
+        toast("图片已粘贴到输入框", "image");
+      } else {
+        setChip("waiting");
+        toast(r.error || "图片没贴进去");
+      }
+      return;
+    }
+  }
   const text = e.clipboardData.getData("text/plain");
   if (!text) {
-    toast("分屏席位暂不支持粘贴图片");
+    toast("点一下输入框再粘贴");
     return;
   }
   setChip("pasting");
-  const ok = await sendDeskPaste(text, "text/plain; charset=utf-8");
-  if (ok) setChip("text", text);
+  const r = await sendDeskPaste(text, "text/plain; charset=utf-8");
+  if (r.ok) setChip("text", text);
   else setChip("waiting");
-  toast(ok ? "已粘贴" : "文字没贴进去");
+  toast(r.ok ? "已粘贴" : r.error || "文字没贴进去");
 }
 
 function bindDesk() {
@@ -909,14 +928,16 @@ function bindDesk() {
 
 async function sendDeskPaste(body, mime) {
   const id = state.deskId;
-  if (!id) return false;
+  if (!id) return { ok: false, error: "无法粘贴" };
   const r = await fetch(`/api/desks/${id}/paste`, {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": mime },
     body,
   });
-  return r.ok;
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) return { ok: false, error: data.error || "无法粘贴" };
+  return { ok: true };
 }
 
 async function copyFromDesk() {
@@ -992,23 +1013,23 @@ function bindClipboard(iframe) {
         remember("image", buf, mime, "", f);
         setChip("pasting");
         toast("pasting", "image");
-        const ok = await sendDeskPaste(buf, mime);
-        if (ok) setChip("image");
+        const pasted = await sendDeskPaste(buf, mime);
+        if (pasted.ok) setChip("image");
         else setChip("waiting");
-        toast(ok ? "图片已粘贴到输入框" : "图片没贴进去，点顶栏再试", "image");
-        return ok;
+        toast(pasted.ok ? "图片已粘贴到输入框" : pasted.error || "图片没贴进去，点顶栏再试", "image");
+        return pasted.ok;
       }
     }
     const text = cd.getData("text/plain");
     if (text) {
       remember("text", text, "text/plain; charset=utf-8", text, null);
       setChip("pasting");
-      const ok = await sendDeskPaste(text, "text/plain; charset=utf-8");
-      if (ok) setChip("text", text);
+      const pasted = await sendDeskPaste(text, "text/plain; charset=utf-8");
+      if (pasted.ok) setChip("text", text);
       else setChip("waiting");
       const preview = text.replace(/\s+/g, " ").trim().slice(0, 18);
-      toast(ok ? `已粘贴「${preview}${text.trim().length > 18 ? "…" : ""}」` : "文字没贴进去");
-      return ok;
+      toast(pasted.ok ? `已粘贴「${preview}${text.trim().length > 18 ? "…" : ""}」` : pasted.error || "文字没贴进去");
+      return pasted.ok;
     }
     return false;
   };
