@@ -146,6 +146,27 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
+        if self.path.rstrip("/") == "/cdp":
+            # 面板按账号开关多人分屏：写 /config/.gpc-cdp，杀掉 Chromium，
+            # autostart 下一轮按开关带或不带 remote-debugging-* 并启停 cdp-fwd。
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                n = 0
+            if n > 32:
+                self.send_response(413)
+                self.end_headers()
+                return
+            raw = self.rfile.read(n).decode("utf-8", "replace").strip().lower() if n else ""
+            on = raw in ("1", "true", "on", "yes")
+            path = "/config/.gpc-cdp"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("1\n" if on else "0\n")
+            print(f"gpc-clipd cdp enable={int(on)}", flush=True)
+            subprocess.run(["pkill", "-f", "/usr/bin/chromium"], check=False, timeout=5)
+            self.send_response(204)
+            self.end_headers()
+            return
         if self.path.rstrip("/") == "/grab":
             mime, data = grab()
             print(f"gpc-clipd grab mime={mime} bytes={len(data)}", flush=True)

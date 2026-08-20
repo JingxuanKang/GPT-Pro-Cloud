@@ -21,10 +21,10 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const state = { me: null, desks: [], presence: {}, users: [], settings: { assist: false }, proxyPresets: [], view: "home", deskId: null, deskMode: "vnc", seatId: null, err: "", modal: false, manage: null, rename: null, create: false, assign: null, resetPw: null, selfPw: false, seatCap: 3, setup: false, boot: true };
+const state = { me: null, desks: [], presence: {}, users: [], settings: {}, proxyPresets: [], view: "home", deskId: null, deskMode: "vnc", seatId: null, err: "", modal: false, manage: null, rename: null, create: false, assign: null, resetPw: null, selfPw: false, seatCap: 3, setup: false, boot: true };
 
-function assistOn() {
-  return !!state.settings?.assist;
+function deskCdpOn(id) {
+  return !!state.desks.find((d) => d.id === id)?.cdp;
 }
 
 function route() {
@@ -170,12 +170,13 @@ function deskStatus(live) {
 
 function deskOcc(d) {
   const vs = people(d.id);
-  if (!vs.length) return `<div class="occ empty"><span class="seats">${ICO.users}0/${seatCap()}</span></div>`;
+  const cap = d.cdp ? seatCap() : 1;
+  if (!vs.length) return `<div class="occ empty"><span class="seats">${ICO.users}0/${cap}</span></div>`;
   const stack = vs
     .slice(0, 4)
     .map((v) => av(v.username, "av mini"))
     .join("");
-  return `<div class="occ"><span class="stack">${stack}</span><span class="seats">${ICO.users}${vs.length}/${seatCap()}</span></div>`;
+  return `<div class="occ"><span class="stack">${stack}</span><span class="seats">${ICO.users}${vs.length}/${cap}</span></div>`;
 }
 
 function renderHome() {
@@ -407,7 +408,6 @@ function sharedProxyValue() {
 
 function renderSettings() {
   if (state.me?.role !== "admin") return renderHome();
-  const on = assistOn();
   const presets = (state.proxyPresets || [])
     .map((u) => `<button type="button" class="chip" data-proxy-pick="${esc(u)}" title="${esc(u)}">${esc(u)}</button>`)
     .join("");
@@ -420,24 +420,35 @@ function renderSettings() {
       </div>`,
     )
     .join("");
+  const cdpRows = state.desks
+    .map(
+      (d) => `<label class="switch-row">
+        <span>
+          <b>${esc(d.name)}</b>
+          <em>允许多人同时使用 / 开启调试口</em>
+        </span>
+        <input type="checkbox" data-cdp-toggle="${esc(d.id)}" ${d.cdp ? "checked" : ""}>
+      </label>`,
+    )
+    .join("");
   return shell(`<div class="narrow">
     <header class="page-head">
       <h1 class="display">设置</h1>
       <p class="hint">对整个部署生效，仅管理员可见。</p>
     </header>
     <section class="panel">
-      <label class="switch-row">
-        <span>
-          <b>页面协助</b>
-          <em>打开后网关连接浏览器的调试口，换来下面两件事。</em>
-        </span>
-        <input type="checkbox" id="assist-toggle" ${on ? "checked" : ""}>
-      </label>
-      <div class="assist-note">
-        <b>说明</b>
-        <p><b>记忆隔离</b> — 每位成员进入账号时，自动进入以其用户名命名的 ChatGPT 项目，并设为仅项目内记忆。同一个号，记忆互不影响。</p>
-        <p><b>分享</b> — 顶栏多一个「分享」按钮，链接直接到手。关闭时自己在页面里点 Share，链接经剪贴板落到本机。</p>
+      <div class="panel-head">
+        <b>多人分屏</b>
+        <em>默认关闭。开启后网关会连浏览器调试口，以便第二人单独看一个标签页；单人使用请保持关闭。</em>
       </div>
+      <div class="assist-note">
+        <b>开启后一并提供</b>
+        <p><b>分屏席位</b> — 第二人不再共用同一只 VNC 鼠标，而是单独看一个标签页。</p>
+        <p><b>记忆隔离</b> — 每位成员进入时自动进入以其用户名命名的 ChatGPT 项目，并设为仅项目内记忆。同一个号，记忆互不影响。</p>
+        <p><b>分享</b> — 顶栏多一个「分享」按钮，链接直接到手。关闭时自己在页面里点 Share，链接经剪贴板落到本机。</p>
+        <p>切换会短暂断开当前画面；ChatGPT 登录状态留在本机 profile 里，不会因为开关调试口而掉登录。</p>
+      </div>
+      <div class="cdp-rows">${cdpRows}</div>
     </section>
     <section class="panel">
       <div class="panel-head">
@@ -572,7 +583,7 @@ function renderDesk() {
         <span class="who" ${names ? "" : "hidden"}>${esc(names)}</span>
       </div>
       <div class="chrome-end">
-        ${assistOn() ? `<button type="button" class="chrome-btn" id="share-chat">${ICO.share}<span>分享</span></button>` : ""}
+        ${deskCdpOn(state.deskId) ? `<button type="button" class="chrome-btn" id="share-chat">${ICO.share}<span>分享</span></button>` : ""}
         <button type="button" class="clip-chip" id="clip-chip"></button>
       </div>
     </div>
@@ -874,7 +885,7 @@ function bindDesk() {
         shareBtn.disabled = false;
       }
     };
-  if (assistOn()) ensureWorkspace();
+  if (deskCdpOn(state.deskId)) ensureWorkspace();
   stopPeek();
   peekTimer = setInterval(async () => {
     if (state.view !== "desk" || !state.deskId) return;
@@ -1521,20 +1532,30 @@ function bind() {
         $("#selfpw-err").textContent = err.message;
       }
     };
-  const assist = $("#assist-toggle");
-  if (assist)
-    assist.onchange = async () => {
-      assist.disabled = true;
+  document.querySelectorAll("[data-cdp-toggle]").forEach((el) => {
+    el.onchange = async () => {
+      const id = el.getAttribute("data-cdp-toggle");
+      const desk = state.desks.find((d) => d.id === id);
+      const name = desk?.name || "这个账号";
+      if (!confirm(`切换「${name}」会短暂断开当前画面，ChatGPT 登录状态会保留。确定？`)) {
+        el.checked = !!desk?.cdp;
+        return;
+      }
+      el.disabled = true;
       try {
-        const r = await api("/api/admin/settings", { method: "POST", body: { assist: assist.checked } });
-        state.settings = r.settings || { assist: assist.checked };
+        await api(`/api/admin/desks/${id}`, { method: "PATCH", body: { cdp: el.checked } });
+        toast(el.checked ? "已开启多人分屏，该账号浏览器正在重启" : "已关闭多人分屏，仅单人使用");
+        await refresh();
       } catch (err) {
-        assist.checked = assistOn();
         toast(err.message || "没能保存");
-      } finally {
-        assist.disabled = false;
+        if (String(err.message || "").includes("已保存")) await refresh();
+        else {
+          el.checked = !!desk?.cdp;
+          el.disabled = false;
+        }
       }
     };
+  });
 }
 
 async function onLogin(e) {
@@ -1558,7 +1579,7 @@ async function onLogin(e) {
 async function refresh() {
   const [me, desks, presence] = await Promise.all([api("/api/me"), api("/api/desks"), api("/api/presence")]);
   state.me = me.user;
-  state.settings = me.settings || { assist: false };
+  state.settings = me.settings || {};
   state.desks = desks.desks;
   state.proxyPresets = desks.proxyPresets || [];
   state.seatCap = desks.seatCap || state.seatCap || 3;

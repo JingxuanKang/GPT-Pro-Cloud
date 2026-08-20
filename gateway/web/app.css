@@ -544,6 +544,7 @@ button.chip:hover { border-color: var(--ink); color: var(--ink); background: var
   line-height: 1.6;
 }
 .assist-note p b { color: var(--ink); font-weight: 600; }
+.cdp-rows .switch-row { border-top: 1px solid var(--hairline); }
 
 .panel-head { padding: 18px 20px 4px; }
 .panel-head b { display: block; font-size: 14.5px; font-weight: 600; }

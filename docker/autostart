@@ -17,7 +17,37 @@ read_proxy() {
     fi
     START_URL="${START_URL:-https://chatgpt.com}"
 }
+
+# Hunch: gateway writes ENABLE_CDP=1 / TAB_SEATS=1 on the container, or
+# /config/.gpc-cdp when the admin toggles 多人分屏. File wins so a toggle
+# can flip Chrome without recreating the compose service. Default off.
+read_cdp() {
+    CDP_ON=0
+    if [ "${ENABLE_CDP:-}" = "1" ] || [ "${TAB_SEATS:-}" = "1" ]; then
+        CDP_ON=1
+    fi
+    if [ -f /config/.gpc-cdp ]; then
+        FLAG=$(head -n1 /config/.gpc-cdp | tr -d '[:space:]')
+        if [ "$FLAG" = "1" ]; then
+            CDP_ON=1
+        else
+            CDP_ON=0
+        fi
+    fi
+}
+
+sync_cdp_fwd() {
+    if [ "${CDP_ON}" = "1" ]; then
+        if ! pgrep -f '/usr/local/bin/gpc-cdp-fwd' >/dev/null 2>&1; then
+            python3 /usr/local/bin/gpc-cdp-fwd >/tmp/gpc-cdp-fwd.log 2>&1 &
+        fi
+    else
+        pkill -f '/usr/local/bin/gpc-cdp-fwd' >/dev/null 2>&1 || true
+    fi
+}
 read_proxy
+read_cdp
+sync_cdp_fwd
 
 if command -v xsettingsd >/dev/null 2>&1; then
     cat > /config/.xsettingsd <<'EOF'
@@ -48,19 +78,27 @@ fi
     done
 ) &
 
-# 网关把本机剪贴板（含截图）送到这里，再 xclip + Ctrl+V。
+# 网关把本机剪贴板（含截图）送到这里，再 xclip + Ctrl+V。不依赖 CDP。
 python3 /usr/local/bin/gpc-clipd >/tmp/gpc-clipd.log 2>&1 &
-python3 /usr/local/bin/gpc-cdp-fwd >/tmp/gpc-cdp-fwd.log 2>&1 &
 
 # 容器重建后 hostname 变了，旧 SingletonLock 会让 Chromium 秒退。
 rm -f /config/chromium/SingletonLock /config/chromium/SingletonSocket /config/chromium/SingletonCookie
 
 while true; do
     read_proxy
+    read_cdp
+    sync_cdp_fwd
     PROXY_FLAG=""
     if [ -n "${PROXY_URL:-}" ]; then
         PROXY_FLAG="--proxy-server=${PROXY_URL}"
         echo "[autostart] proxy-server=${PROXY_URL}"
+    fi
+    CDP_FLAGS=""
+    if [ "${CDP_ON}" = "1" ]; then
+        CDP_FLAGS="--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins=*"
+        echo "[autostart] cdp=on :9222"
+    else
+        echo "[autostart] cdp=off"
     fi
     # No --kiosk: kiosk + --app blocks extra chatgpt.com tabs. Tab seats use
     # Target.createTarget (new window, parked off-screen). Members stream the
@@ -79,9 +117,7 @@ while true; do
         --force-device-scale-factor=1 \
         --disable-background-networking \
         --user-data-dir=/config/chromium \
-        --remote-debugging-port=9222 \
-        --remote-debugging-address=127.0.0.1 \
-        --remote-allow-origins=* \
+        ${CDP_FLAGS} \
         --app="${START_URL}" \
         ${PROXY_FLAG}
     echo "[autostart] Chromium 退出，2 秒后重启"
