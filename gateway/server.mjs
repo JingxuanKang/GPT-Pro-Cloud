@@ -10,10 +10,11 @@ import { createDockerClient, ensureDeskContainer, removeDeskContainer } from "..
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
 import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
-import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, projectOnboardScript, sleep } from "../lib/chrome.mjs";
+import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
 import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, evaluateOnTarget, forgetDeskBrowser, targetExists } from "../lib/cdp.mjs";
+import { createSeatJailRegistry, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
 import { WebSocketServer } from "ws";
@@ -44,6 +45,7 @@ const users = createUserStore({
 for (const id of users.extraDeskIds()) registry.add(id);
 const presence = createPresence();
 const seats = createSeatRegistry({ cap: parseTabSeatCap(process.env.TAB_SEATS_MAX) });
+const jails = createSeatJailRegistry();
 const sessions = createSessionStore({ file: join(dirname(USERS_FILE), "sessions.json"), ttlMs: TTL_MS });
 const liveSockets = createSocketHub();
 const seatWss = new WebSocketServer({ noServer: true });
@@ -67,6 +69,35 @@ async function withDeskCdp(id, fn) {
     return await fn();
   } finally {
     release();
+  }
+}
+
+async function rememberProjectUrl(uid, deskId, name, raw) {
+  const url = projectUrlFromOnboard({ url: raw });
+  const patch = { projectReady: true, projectName: name, projectDesk: deskId };
+  if (url) patch.projectUrl = url;
+  users.update(uid, patch);
+  return url || users.projectUrlOn(uid, deskId);
+}
+
+async function resolveOnboardUrl(id, result, targetId) {
+  const fromResult = projectUrlFromOnboard(result);
+  if (fromResult) return fromResult;
+  try {
+    const href = await evaluateInDesk(id, READ_PROJECT_URL, 8000, { targetId });
+    return projectUrlFromOnboard({ url: href });
+  } catch {
+    return "";
+  }
+}
+
+async function armSeatProjectJail(seat, home) {
+  if (!seat?.id || !home) return;
+  seat.projectUrl = home;
+  try {
+    await jails.arm(seat, home);
+  } catch {
+    /* jail is best-effort — page assist still ran */
   }
 }
 
@@ -94,8 +125,12 @@ function kickOnboard(id, user, targetId) {
   const create = !users.readyOn(uid, id);
   const t = setTimeout(() => {
     runOnboard(id, name, { create, targetId })
-      .then((r) => {
-        if (r?.ok) users.update(uid, { projectReady: true, projectName: name, projectDesk: id });
+      .then(async (r) => {
+        if (!r?.ok) return;
+        const url = await resolveOnboardUrl(id, r, targetId);
+        const home = await rememberProjectUrl(uid, id, name, url || r.url);
+        const seat = seats.ofUser(id, uid);
+        if (seat) await armSeatProjectJail(seat, home);
       })
       .catch(() => {});
   }, ONBOARD_YIELD_MS);
@@ -103,6 +138,7 @@ function kickOnboard(id, user, targetId) {
 }
 
 async function closeSeatTab(seat) {
+  if (seat?.id) jails.stop(seat.id);
   if (seat?.mode === "tab" && seat.targetId) {
     await closeTarget(seat.deskId, seat.targetId).catch(() => {});
   }
@@ -419,6 +455,8 @@ async function handleApi(req, res, url, sess) {
       return json(res, e.status || 409, { error: e.message, cap: seats.cap, code: e.code });
     }
     const claimedTargetIds = seats.list(id).map((s) => s.targetId).filter(Boolean);
+    const projectUrl = cdp ? users.projectUrlOn(sess.user.id, id) : "";
+    const startUrl = seatStartUrl({ cdp, projectUrl });
     let seat;
     if (decision.attach) {
       seat = decision.seat || seats.ofUser(id, sess.user.id);
@@ -426,12 +464,13 @@ async function handleApi(req, res, url, sess) {
         const alive = await targetExists(id, seat.targetId);
         if (!alive) {
           try {
-            const created = await createParkedChatGPTTab(id, { claimedTargetIds });
-            seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId });
+            const created = await createParkedChatGPTTab(id, { claimedTargetIds, startUrl });
+            seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId, projectUrl });
           } catch (e) {
             return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
           }
         } else {
+          seats.claim(id, sess.user, { projectUrl });
           seats.beat(seat.id);
         }
       } else {
@@ -440,12 +479,12 @@ async function handleApi(req, res, url, sess) {
     } else if (decision.mode === "tab") {
       let created;
       try {
-        created = await createParkedChatGPTTab(id, { claimedTargetIds });
+        created = await createParkedChatGPTTab(id, { claimedTargetIds, startUrl });
       } catch (e) {
         return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
       }
       try {
-        seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId });
+        seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId, projectUrl });
       } catch (e) {
         await closeTarget(id, created.targetId).catch(() => {});
         return json(res, e.status || 409, { error: e.message, cap: seats.cap });
@@ -455,6 +494,7 @@ async function handleApi(req, res, url, sess) {
     }
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
+    if (cdp && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
     if (cdp) kickOnboard(id, sess.user, seat?.targetId);
     return json(res, 200, { ok: true, id, mode: seat.mode, seat: publicSeat(seat), cap: seats.cap });
   }
@@ -588,8 +628,10 @@ async function handleApi(req, res, url, sess) {
       const tab = seats.ofUser(id, sess.user.id);
       const r = await runOnboard(id, name, { create, targetId: tab?.targetId });
       if (!r?.ok) return json(res, 400, { error: r?.error || "工作区还没准备好" });
-      users.update(sess.user.id, { projectReady: true, projectName: name, projectDesk: id });
-      return json(res, 200, { ok: true, name, action: r.action || "opened", created: r.action === "created" });
+      const url = await resolveOnboardUrl(id, r, tab?.targetId);
+      const home = await rememberProjectUrl(sess.user.id, id, name, url || r.url);
+      if (tab) await armSeatProjectJail(tab, home);
+      return json(res, 200, { ok: true, name, action: r.action || "opened", created: r.action === "created", url: home || "" });
     } catch (e) {
       const raw = e.message || "";
       const error = /chromium|ChatGPT 页面|无法连接|未就绪/i.test(raw) ? "工作区还没准备好" : raw || "工作区还没准备好";

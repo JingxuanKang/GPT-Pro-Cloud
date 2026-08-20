@@ -38,12 +38,20 @@ describe("users + presence", () => {
 
   it("marks a member project ready after first desk open", () => {
     const m = store.create({ username: "bob", password: "secret6", desks: ["a"] });
-    const u = store.update(m.id, { projectReady: true, projectName: "bob", projectDesk: "a" });
+    const u = store.update(m.id, {
+      projectReady: true,
+      projectName: "bob",
+      projectDesk: "a",
+      projectUrl: "https://chatgpt.com/g/g-p-bbb222-bob/c/x",
+    });
     assert.equal(u.projectReady, true);
     assert.equal(u.projectName, "bob");
+    assert.equal(u.projectUrls.a, "https://chatgpt.com/g/g-p-bbb222-bob/project");
     assert.equal(store.get(m.id).projectReady, true);
+    assert.equal(store.projectUrlOn(m.id, "a"), "https://chatgpt.com/g/g-p-bbb222-bob/project");
     assert.equal(store.readyOn(m.id, "a"), true);
     assert.equal(store.readyOn(m.id, "b"), false);
+    assert.equal(store.projectUrlOn(m.id, "b"), "");
   });
 
   it("creates on a second desk even if the first desk is ready", () => {
