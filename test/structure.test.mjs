@@ -62,7 +62,8 @@ describe("standalone product", () => {
     const start = readFileSync(resolve(root, "docker/autostart"), "utf8");
     const init = readFileSync(resolve(root, "docker/proxy-init.sh"), "utf8");
     assert.match(start, /--app="\$\{START_URL\}"/);
-    assert.doesNotMatch(start, /--kiosk/);
+    const launch = start.slice(start.indexOf("/usr/bin/chromium"));
+    assert.doesNotMatch(launch, /--kiosk/);
     assert.match(start, /No --kiosk/);
     assert.match(start, /X <= -1000/);
     assert.match(start, /--start-fullscreen/);
