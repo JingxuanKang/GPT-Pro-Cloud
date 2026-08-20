@@ -25,6 +25,7 @@ describe("standalone product", () => {
     assert.ok(proxyInit.includes('RAW="${RAW//\\[::1\\]/host.docker.internal}"'));
     assert.equal(proxyInit.includes('RAW="${RAW//[::1]/host.docker.internal}"'), false);
     assert.doesNotMatch(compose, /9222|9223/);
+    assert.doesNotMatch(compose, /ports:[\s\S]*debug/i);
     const up = readFileSync(resolve(root, "scripts/up.sh"), "utf8");
     assert.match(up, /docker compose pull/);
     assert.match(up, /docker compose up -d/);

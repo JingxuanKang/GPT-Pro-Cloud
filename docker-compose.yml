@@ -70,7 +70,7 @@ services:
     volumes:
       - ./data/a:/config
     # Chromium DevTools 默认关闭。面板「多人分屏」才会写 ENABLE_CDP /
-    # /config/.gpc-cdp。9222/9223 不映射宿主机，cdp-fwd 只接受 gateway。
+    # /config/.gpc-cdp。调试口不映射宿主机，cdp-fwd 只接受 gateway。
 
   desktop-b:
     <<: *desktop
