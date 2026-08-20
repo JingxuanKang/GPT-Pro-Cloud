@@ -13,7 +13,7 @@ import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, projectOnboardScript, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
-import { attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, targetExists } from "../lib/cdp.mjs";
+import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, evaluateOnTarget, forgetDeskBrowser, targetExists } from "../lib/cdp.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { WebSocketServer } from "ws";
 
@@ -47,15 +47,17 @@ const sessions = createSessionStore({ file: join(dirname(USERS_FILE), "sessions.
 const liveSockets = createSocketHub();
 const seatWss = new WebSocketServer({ noServer: true });
 const loginLimiter = createLoginLimiter({ maxFails: 10, windowMs: 15 * 60 * 1000 });
-const onboardLocks = new Map();
+const deskCdpLocks = new Map();
+/** Yield so a second /open can create a tab before assist grabs the debugger. */
+const ONBOARD_YIELD_MS = 1500;
 
-async function withOnboardLock(id, fn) {
-  const prev = onboardLocks.get(id) || Promise.resolve();
+async function withDeskCdp(id, fn) {
+  const prev = deskCdpLocks.get(id) || Promise.resolve();
   let release;
   const gate = new Promise((r) => {
     release = r;
   });
-  onboardLocks.set(
+  deskCdpLocks.set(
     id,
     prev.then(() => gate),
   );
@@ -71,10 +73,12 @@ async function runOnboard(id, name, { create = true, targetId } = {}) {
   await waitForDesk(id, 45000, { targetId });
   let last = { ok: false, error: "工作区还没准备好" };
   for (let i = 0; i < 3; i++) {
-    last = await evaluateInDesk(id, projectOnboardScript(name, { create }), 28000, { targetId });
+    last = await withDeskCdp(id, () => evaluateInDesk(id, projectOnboardScript(name, { create }), 28000, { targetId }));
     if (last?.ok) return last;
     if (!create && last?.error === "找不到项目") {
-      last = await evaluateInDesk(id, projectOnboardScript(name, { create: true }), 28000, { targetId });
+      last = await withDeskCdp(id, () =>
+        evaluateInDesk(id, projectOnboardScript(name, { create: true }), 28000, { targetId }),
+      );
       if (last?.ok) return last;
     }
     await sleep(1500);
@@ -87,11 +91,14 @@ function kickOnboard(id, user, targetId) {
   if (!name) return;
   const uid = user.id;
   const create = !users.readyOn(uid, id);
-  withOnboardLock(id, () => runOnboard(id, name, { create, targetId }))
-    .then((r) => {
-      if (r?.ok) users.update(uid, { projectReady: true, projectName: name, projectDesk: id });
-    })
-    .catch(() => {});
+  const t = setTimeout(() => {
+    runOnboard(id, name, { create, targetId })
+      .then((r) => {
+        if (r?.ok) users.update(uid, { projectReady: true, projectName: name, projectDesk: id });
+      })
+      .catch(() => {});
+  }, ONBOARD_YIELD_MS);
+  t.unref?.();
 }
 
 async function closeSeatTab(seat) {
@@ -279,6 +286,7 @@ async function handleApi(req, res, url, sess) {
       .map((d) => ({
         id: d.id,
         name: users.deskNameOf(d.id) || d.name,
+        cdp: users.deskCdpOn(d.id),
         ...(isAdmin ? { proxy: users.deskProxyOf(d.id), extra: users.isExtraDesk(d.id) } : {}),
       }));
     return json(res, 200, { desks, seatCap: seats.cap, ...(isAdmin ? { proxyPresets: users.proxyPresets() } : {}) });
@@ -292,7 +300,7 @@ async function handleApi(req, res, url, sess) {
         registry,
         name: body.name,
         id: body.id,
-        ensure: (id) => ensureDeskContainer(id, docker),
+        ensure: (id) => ensureDeskContainer(id, docker, { enableCdp: users.deskCdpOn(id) }),
       });
       console.log(`desk added id=${desk.id} name=${desk.name} by=${sess.user.username} ip=${clientIp(req)}`);
       return json(res, 200, { desk });
@@ -338,6 +346,16 @@ async function handleApi(req, res, url, sess) {
           return json(res, 502, { error: "代理已保存，但账号容器暂时不可达，重启该容器后生效" });
         }
         out.proxy = proxy;
+      }
+      if ("cdp" in body) {
+        const cdp = users.setDeskCdp(rename[1], !!body.cdp);
+        try {
+          await applyDeskCdpLive(rename[1], cdp);
+        } catch {
+          return json(res, 502, { error: "已保存，但账号容器暂时不可达，重启该容器后生效" });
+        }
+        forgetDeskBrowser(rename[1]);
+        out.cdp = cdp;
       }
       return json(res, 200, out);
     } catch (e) {
@@ -391,17 +409,13 @@ async function handleApi(req, res, url, sess) {
   if (open && req.method === "POST") {
     const id = open[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
-    let hasSession = false;
-    try {
-      hasSession = await deskHasChatGPTSession(id);
-    } catch {
-      hasSession = false;
-    }
+    const cdp = users.deskCdpOn(id);
+    const extraOccupants = presence.list(id).map((v) => ({ userId: v.id }));
     let decision;
     try {
-      decision = seats.decide(id, sess.user, { hasSession });
+      decision = seats.decide(id, sess.user, { cdp, extraOccupants });
     } catch (e) {
-      return json(res, e.status || 409, { error: e.message, cap: seats.cap });
+      return json(res, e.status || 409, { error: e.message, cap: seats.cap, code: e.code });
     }
     let seat;
     if (decision.attach) {
@@ -439,7 +453,7 @@ async function handleApi(req, res, url, sess) {
     }
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
-    if (users.assistOn()) kickOnboard(id, sess.user, seat?.targetId);
+    if (cdp) kickOnboard(id, sess.user, seat?.targetId);
     return json(res, 200, { ok: true, id, mode: seat.mode, seat: publicSeat(seat), cap: seats.cap });
   }
   const paste = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/paste$/);
@@ -461,7 +475,7 @@ async function handleApi(req, res, url, sess) {
         try {
           await attached.cdp.send("Input.insertText", { text: text.slice(0, 64 * 1024) }, attached.sessionId);
         } finally {
-          attached.cdp.close();
+          await attached.release();
         }
         return json(res, 200, { ok: true, scoped: "tab" });
       } catch {
@@ -537,7 +551,7 @@ async function handleApi(req, res, url, sess) {
   if (share && req.method === "POST") {
     const id = share[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
-    if (!users.assistOn()) return json(res, 403, { error: "未开启页面协助" });
+    if (!users.deskCdpOn(id)) return json(res, 403, { error: "这个号未开多人分屏，页面协助需要开启调试口" });
     try {
       const tab = seats.ofUser(id, sess.user.id);
       const clicked = await evaluateInDesk(id, SHARE_CLICK, 28000, { targetId: tab?.targetId });
@@ -560,13 +574,13 @@ async function handleApi(req, res, url, sess) {
   if (onboard && req.method === "POST") {
     const id = onboard[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
-    if (!users.assistOn()) return json(res, 403, { error: "未开启页面协助" });
+    if (!users.deskCdpOn(id)) return json(res, 403, { error: "这个号未开多人分屏，页面协助需要开启调试口" });
     const name = String(sess.user.username || "").trim();
     if (!name) return json(res, 400, { error: "没有用户名" });
     try {
       const create = !users.readyOn(sess.user.id, id);
       const tab = seats.ofUser(id, sess.user.id);
-      const r = await withOnboardLock(id, () => runOnboard(id, name, { create, targetId: tab?.targetId }));
+      const r = await runOnboard(id, name, { create, targetId: tab?.targetId });
       if (!r?.ok) return json(res, 400, { error: r?.error || "工作区还没准备好" });
       users.update(sess.user.id, { projectReady: true, projectName: name, projectDesk: id });
       return json(res, 200, { ok: true, name, action: r.action || "opened", created: r.action === "created" });
@@ -733,7 +747,7 @@ async function reconcileExtraDesks() {
   if (!extras.length) return;
   for (const id of extras) {
     try {
-      await ensureDeskContainer(id, docker);
+      await ensureDeskContainer(id, docker, { enableCdp: users.deskCdpOn(id) });
       console.log(`desk ${id}: container ready`);
     } catch (e) {
       console.error(`desk ${id}: ${e.message}`);

@@ -25,6 +25,8 @@ GPT-Pro Cloud 是一套 Docker 网关加浏览器桌面，把已登录的 ChatGP
 
 每个账号独占一个带持久化 profile 的 Chromium。一个网关提供登录、账号选择、成员管理和远程桌面——全部在浏览器里完成。
 
+多人同时共用一个 ChatGPT 账号是**需手动开启**的选项（浏览器调试口 / CDP），**默认关闭**。单人独占 VNC 不会打开调试口。
+
 ## 安装
 
 运行环境：Docker Compose（Linux 服务器；macOS / Windows 用 Docker Desktop），每个账号约 1 GB 内存。
@@ -112,7 +114,7 @@ VNC（首次登录）路径上，剪贴板在本机和桌面之间是双向的�
 
 记忆隔离解决"共用账号但不共用上下文"：开启页面协助后，成员第一次进入某个账号，网关会自动创建（或进入）一个以其用户名命名、设为**仅项目内记忆**的 ChatGPT 项目。项目内的对话不读写账号的全局记忆，成员之间互不泄漏上下文，每人的对话也归拢在各自的项目里。
 
-页面协助默认关闭。它靠 DevTools 选择器驱动 chatgpt.com，OpenAI 改版后可能失效；关掉时分享自己点、链接照样拷到本机，但不做自动进项目。
+页面协助不是单独开关：它和「允许多人同时使用 / 开启调试口」是同一个按账号选项（默认关闭）。它靠 DevTools 选择器驱动 chatgpt.com，OpenAI 改版后可能失效；关掉时分享自己点、链接照样拷到本机，但不做自动进项目。
 
 ## 配置
 
@@ -133,7 +135,7 @@ VNC（首次登录）路径上，剪贴板在本机和桌面之间是双向的�
 
 ## 同时进入：分屏席位
 
-一个 ChatGPT 账号仍然是一台桌面容器、一份 Chromium profile（`--user-data-dir=/config/chromium`）。账号登录之后，两个人不该再共用一只 VNC 鼠标。
+一个 ChatGPT 账号仍然是一台桌面容器、一份 Chromium profile（`--user-data-dir=/config/chromium`）。账号登录之后，两个人不该再共用一只 VNC 鼠标。分屏席位要管理员在该账号上打开「允许多人同时使用」；未开启时第二人会被拒绝。
 
 - 还没有 ChatGPT cookie 时，走原来的 KasmVNC，方便主人先登录。
 - 登录之后，第一个人仍用那扇 VNC 窗口。再有人打开同一张卡片，会在**同一只** Chromium 里新开一个 chatgpt.com 标签。网关只推这一页的像素（CDP `Page.startScreencast`），指针和键盘走 CDP `Input`。对方看不到标签栏，也看不到别人的 target。

@@ -69,7 +69,8 @@ services:
       PROXY_URL_OVERRIDE: ${PROXY_URL_A:-}
     volumes:
       - ./data/a:/config
-    # Chromium DevTools 不映射到宿主机，只在 compose 网里给 gateway 用。
+    # Chromium DevTools 默认关闭。面板「多人分屏」才会写 ENABLE_CDP /
+    # /config/.gpc-cdp。调试口不映射宿主机，cdp-fwd 只接受 gateway。
 
   desktop-b:
     <<: *desktop
