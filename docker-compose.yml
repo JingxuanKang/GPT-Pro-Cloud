@@ -39,6 +39,7 @@ services:
       - AUTH_USER=${AUTH_USER:-admin}
       - USERS_FILE=/data/users.json
       - INSTANCES=${INSTANCES:-a,b}
+      - TAB_SEATS_MAX=${TAB_SEATS_MAX:-3}
       - VNC_USER=abc
       - VNC_PASSWORD=${VNC_PASSWORD:-gpc-internal}
       # 面板「添加账号」通过 Engine API 克隆 desktop-a；一次配置：挂上 docker.sock

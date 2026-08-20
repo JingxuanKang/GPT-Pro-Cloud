@@ -10,8 +10,12 @@ import { createDockerClient, ensureDeskContainer, removeDeskContainer } from "..
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
 import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
-import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, projectOnboardScript, sleep } from "../lib/chrome.mjs";
+import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, projectOnboardScript, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
+import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
+import { attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, targetExists } from "../lib/cdp.mjs";
+import { startSeatScreencast } from "../lib/screencast.mjs";
+import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
 const AUTH_USER = process.env.AUTH_USER || "admin";
@@ -38,8 +42,10 @@ const users = createUserStore({
 });
 for (const id of users.extraDeskIds()) registry.add(id);
 const presence = createPresence();
+const seats = createSeatRegistry({ cap: parseTabSeatCap(process.env.TAB_SEATS_MAX) });
 const sessions = createSessionStore({ file: join(dirname(USERS_FILE), "sessions.json"), ttlMs: TTL_MS });
 const liveSockets = createSocketHub();
+const seatWss = new WebSocketServer({ noServer: true });
 const loginLimiter = createLoginLimiter({ maxFails: 10, windowMs: 15 * 60 * 1000 });
 const onboardLocks = new Map();
 
@@ -61,14 +67,14 @@ async function withOnboardLock(id, fn) {
   }
 }
 
-async function runOnboard(id, name, { create = true } = {}) {
-  await waitForDesk(id, 45000);
+async function runOnboard(id, name, { create = true, targetId } = {}) {
+  await waitForDesk(id, 45000, { targetId });
   let last = { ok: false, error: "工作区还没准备好" };
   for (let i = 0; i < 3; i++) {
-    last = await evaluateInDesk(id, projectOnboardScript(name, { create }));
+    last = await evaluateInDesk(id, projectOnboardScript(name, { create }), 28000, { targetId });
     if (last?.ok) return last;
     if (!create && last?.error === "找不到项目") {
-      last = await evaluateInDesk(id, projectOnboardScript(name, { create: true }));
+      last = await evaluateInDesk(id, projectOnboardScript(name, { create: true }), 28000, { targetId });
       if (last?.ok) return last;
     }
     await sleep(1500);
@@ -76,16 +82,28 @@ async function runOnboard(id, name, { create = true } = {}) {
   return last;
 }
 
-function kickOnboard(id, user) {
+function kickOnboard(id, user, targetId) {
   const name = String(user.username || "").trim();
   if (!name) return;
   const uid = user.id;
   const create = !users.readyOn(uid, id);
-  withOnboardLock(id, () => runOnboard(id, name, { create }))
+  withOnboardLock(id, () => runOnboard(id, name, { create, targetId }))
     .then((r) => {
       if (r?.ok) users.update(uid, { projectReady: true, projectName: name, projectDesk: id });
     })
     .catch(() => {});
+}
+
+async function closeSeatTab(seat) {
+  if (seat?.mode === "tab" && seat.targetId) {
+    await closeTarget(seat.deskId, seat.targetId).catch(() => {});
+  }
+}
+
+async function releaseUserSeats(userId) {
+  const released = seats.releaseByUser(userId);
+  await Promise.all(released.map((s) => closeSeatTab(s)));
+  return released;
 }
 
 const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: true });
@@ -263,7 +281,7 @@ async function handleApi(req, res, url, sess) {
         name: users.deskNameOf(d.id) || d.name,
         ...(isAdmin ? { proxy: users.deskProxyOf(d.id), extra: users.isExtraDesk(d.id) } : {}),
       }));
-    return json(res, 200, { desks, ...(isAdmin ? { proxyPresets: users.proxyPresets() } : {}) });
+    return json(res, 200, { desks, seatCap: seats.cap, ...(isAdmin ? { proxyPresets: users.proxyPresets() } : {}) });
   }
   if (url.pathname === "/api/admin/desks" && req.method === "POST") {
     if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
@@ -288,8 +306,10 @@ async function handleApi(req, res, url, sess) {
     const id = rename[1];
     try {
       for (const v of presence.list(id)) {
-        if (v.id) kickLiveSession({ sessions, presence, sockets: liveSockets }, v.id);
+        if (v.id) kickLiveSession({ sessions, presence, sockets: liveSockets, seats }, v.id);
       }
+      const parked = seats.releaseDesk(id);
+      await Promise.all(parked.map((s) => closeSeatTab(s)));
       presence.clear(id);
       const desk = await retireDesk({
         users,
@@ -358,9 +378,12 @@ async function handleApi(req, res, url, sess) {
     const body = await readBody(req);
     const deskId = String(body.deskId || parseCookie(req.headers.cookie)[DESK] || "");
     if (!users.canOpen(sess.user, deskId)) return json(res, 403, { error: "没有访问权限" });
-    return json(res, 200, { viewers: presence.beat(deskId, sess.user) });
+    const seat = seats.ofUser(deskId, sess.user.id);
+    if (seat) seats.beat(seat.id);
+    return json(res, 200, { viewers: presence.beat(deskId, sess.user), seat: publicSeat(seat) });
   }
   if (url.pathname === "/api/presence/leave" && req.method === "POST") {
+    await releaseUserSeats(sess.user.id);
     presence.leaveAll(sess.user.id);
     return json(res, 200, { ok: true, presence: presence.all() });
   }
@@ -368,10 +391,56 @@ async function handleApi(req, res, url, sess) {
   if (open && req.method === "POST") {
     const id = open[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    let hasSession = false;
+    try {
+      hasSession = await deskHasChatGPTSession(id);
+    } catch {
+      hasSession = false;
+    }
+    let decision;
+    try {
+      decision = seats.decide(id, sess.user, { hasSession });
+    } catch (e) {
+      return json(res, e.status || 409, { error: e.message, cap: seats.cap });
+    }
+    let seat;
+    if (decision.attach) {
+      seat = decision.seat || seats.ofUser(id, sess.user.id);
+      if (seat?.mode === "tab") {
+        const alive = await targetExists(id, seat.targetId);
+        if (!alive) {
+          try {
+            const created = await createParkedChatGPTTab(id);
+            seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId });
+          } catch (e) {
+            return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
+          }
+        } else {
+          seats.beat(seat.id);
+        }
+      } else {
+        seats.beat(seat.id);
+      }
+    } else if (decision.mode === "tab") {
+      let created;
+      try {
+        created = await createParkedChatGPTTab(id);
+      } catch (e) {
+        return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
+      }
+      try {
+        seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId });
+      } catch (e) {
+        await closeTarget(id, created.targetId).catch(() => {});
+        return json(res, e.status || 409, { error: e.message, cap: seats.cap });
+      }
+    } else {
+      seat = seats.claim(id, sess.user, { mode: "vnc" });
+    }
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
-    if (users.assistOn()) kickOnboard(id, sess.user);
-    return json(res, 200, { ok: true, id });
+    if (users.assistOn()) kickOnboard(id, sess.user, seat?.targetId);
+    return json(res, 200, { ok: true, id, mode: seat.mode, seat: publicSeat(seat), cap: seats.cap });
   }
   const paste = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/paste$/);
   if (paste && req.method === "POST") {
@@ -383,6 +452,22 @@ async function handleApi(req, res, url, sess) {
     if (!body.length) return json(res, 400, { error: "空内容" });
     if (body.length > 8 * 1024 * 1024) return json(res, 413, { error: "太大了" });
     const ct = String(req.headers["content-type"] || "text/plain; charset=utf-8");
+    const tab = seats.ofUser(id, sess.user.id);
+    if (tab?.mode === "tab") {
+      if (!ct.startsWith("text/")) return json(res, 400, { error: "分屏席位暂不支持粘贴图片" });
+      try {
+        const text = body.toString("utf8");
+        const attached = await attachSeatTarget(id, tab.targetId);
+        try {
+          await attached.cdp.send("Input.insertText", { text: text.slice(0, 64 * 1024) }, attached.sessionId);
+        } finally {
+          attached.cdp.close();
+        }
+        return json(res, 200, { ok: true, scoped: "tab" });
+      } catch {
+        return json(res, 502, { error: "无法粘贴" });
+      }
+    }
     try {
       const r = await fetch(`http://desktop-${id}:18790/`, {
         method: "POST",
@@ -399,6 +484,18 @@ async function handleApi(req, res, url, sess) {
   if (copy && req.method === "POST") {
     const id = copy[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const tab = seats.ofUser(id, sess.user.id);
+    if (tab?.mode === "tab") {
+      try {
+        const text = await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ);
+        const buf = Buffer.from(String(text || ""), "utf8");
+        res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+        res.end(buf);
+        return;
+      } catch {
+        return json(res, 502, { error: "无法复制" });
+      }
+    }
     try {
       const r = await fetch(`http://desktop-${id}:18790/grab`, { method: "POST" });
       if (!r.ok) return json(res, 502, { error: "无法复制" });
@@ -415,6 +512,18 @@ async function handleApi(req, res, url, sess) {
   if (peek && req.method === "GET") {
     const id = peek[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const tab = seats.ofUser(id, sess.user.id);
+    if (tab?.mode === "tab") {
+      try {
+        const text = await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ);
+        const buf = Buffer.from(String(text || ""), "utf8");
+        res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+        res.end(buf);
+        return;
+      } catch {
+        return json(res, 502, { error: "无法读取剪贴板" });
+      }
+    }
     try {
       const { ct, buf } = await peekClipboard(id);
       res.writeHead(200, { "content-type": ct, "cache-control": "no-store" });
@@ -430,11 +539,17 @@ async function handleApi(req, res, url, sess) {
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
     if (!users.assistOn()) return json(res, 403, { error: "未开启页面协助" });
     try {
-      const clicked = await evaluateInDesk(id, SHARE_CLICK);
+      const tab = seats.ofUser(id, sess.user.id);
+      const clicked = await evaluateInDesk(id, SHARE_CLICK, 28000, { targetId: tab?.targetId });
       if (!clicked?.ok) return json(res, 400, { error: clicked?.error || "分享失败" });
       await sleep(400);
-      const { ct, buf } = await peekClipboard(id);
-      const text = buf.toString("utf8").trim();
+      let text = "";
+      if (tab?.mode === "tab" && tab.targetId) {
+        text = String((await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ)) || "").trim();
+      } else {
+        const { buf } = await peekClipboard(id);
+        text = buf.toString("utf8").trim();
+      }
       if (!isShareUrl(text)) return json(res, 200, { ok: true, url: "" });
       return json(res, 200, { ok: true, url: text.split(/\s+/)[0] });
     } catch (e) {
@@ -450,7 +565,8 @@ async function handleApi(req, res, url, sess) {
     if (!name) return json(res, 400, { error: "没有用户名" });
     try {
       const create = !users.readyOn(sess.user.id, id);
-      const r = await withOnboardLock(id, () => runOnboard(id, name, { create }));
+      const tab = seats.ofUser(id, sess.user.id);
+      const r = await withOnboardLock(id, () => runOnboard(id, name, { create, targetId: tab?.targetId }));
       if (!r?.ok) return json(res, 400, { error: r?.error || "工作区还没准备好" });
       users.update(sess.user.id, { projectReady: true, projectName: name, projectDesk: id });
       return json(res, 200, { ok: true, name, action: r.action || "opened", created: r.action === "created" });
@@ -478,7 +594,8 @@ async function handleApi(req, res, url, sess) {
     if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
     const user = users.get(kick[1]);
     if (!user) return json(res, 404, { error: "用户不存在" });
-    const dropped = kickLiveSession({ sessions, presence, sockets: liveSockets }, kick[1]);
+    const dropped = kickLiveSession({ sessions, presence, sockets: liveSockets, seats }, kick[1]);
+    await Promise.all((dropped.released || []).map((s) => closeSeatTab(s)));
     console.log(`kick user=${user.username} by=${sess.user.username} sessions=${dropped.sessions} sockets=${dropped.sockets} ip=${clientIp(req)}`);
     return json(res, 200, { ok: true, user, ...dropped, presence: presence.all() });
   }
@@ -493,7 +610,10 @@ async function handleApi(req, res, url, sess) {
       if (typeof body.disabled === "boolean") patch.disabled = body.disabled;
       const user = users.update(one[1], patch);
       if (body.password || body.disabled === true) sessions.deleteByUser(one[1]);
-      if (body.disabled === true) presence.leaveAll(one[1]);
+      if (body.disabled === true) {
+        presence.leaveAll(one[1]);
+        await releaseUserSeats(one[1]);
+      }
       return json(res, 200, { user });
     } catch (e) {
       return json(res, 400, { error: e.message });
@@ -505,6 +625,7 @@ async function handleApi(req, res, url, sess) {
       users.remove(one[1]);
       sessions.deleteByUser(one[1]);
       presence.leaveAll(one[1]);
+      await releaseUserSeats(one[1]);
       return json(res, 200, { ok: true });
     } catch (e) {
       return json(res, 400, { error: e.message });
@@ -570,6 +691,29 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const seatMatch = url.pathname.match(/^\/seats\/([0-9a-f-]{36})$/i);
+  if (seatMatch) {
+    const seat = seats.get(seatMatch[1]);
+    if (!seat || seat.userId !== sess.user.id || seat.mode !== "tab" || !users.canOpen(sess.user, seat.deskId)) {
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    seatWss.handleUpgrade(req, socket, head, (ws) => {
+      liveSockets.add(sess.user.id, ws);
+      seats.beat(seat.id);
+      startSeatScreencast({ ws, seat }).catch((err) => {
+        console.error("seat stream:", err.message);
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+      });
+    });
+    return;
+  }
   const deskId = parseCookie(req.headers.cookie)[DESK];
   const desk = deskId && registry.get(deskId);
   if (!desk || !users.canOpen(sess.user, desk.id)) {
@@ -597,7 +741,16 @@ async function reconcileExtraDesks() {
   }
 }
 
+setInterval(() => {
+  for (const seat of seats.idleTabs()) {
+    seats.release(seat.id);
+    presence.leave(seat.deskId, seat.userId);
+    closeSeatTab(seat).catch(() => {});
+    console.log(`seat idle closed desk=${seat.deskId} user=${seat.username}`);
+  }
+}, 15_000);
+
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`gateway on :${PORT} desks=${registry.ids().join(",")}`);
+  console.log(`gateway on :${PORT} desks=${registry.ids().join(",")} tabSeats=${seats.cap}`);
   reconcileExtraDesks();
 });

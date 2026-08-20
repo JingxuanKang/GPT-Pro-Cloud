@@ -45,8 +45,18 @@ describe("kick live session", () => {
     const sessions = createSessionStore({ ttlMs: 60_000 });
     const presence = createPresence();
     const sockets = createSocketHub();
-    assert.deepEqual(kickLiveSession({ sessions, presence, sockets }, ""), { sessions: 0, sockets: 0 });
-    assert.deepEqual(kickLiveSession({ sessions, presence, sockets }, "ghost"), { sessions: 0, sockets: 0 });
+    assert.deepEqual(kickLiveSession({ sessions, presence, sockets }, ""), {
+      sessions: 0,
+      sockets: 0,
+      seats: 0,
+      released: [],
+    });
+    assert.deepEqual(kickLiveSession({ sessions, presence, sockets }, "ghost"), {
+      sessions: 0,
+      sockets: 0,
+      seats: 0,
+      released: [],
+    });
   });
 });
 
