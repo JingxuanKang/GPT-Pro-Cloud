@@ -14,10 +14,13 @@ import {
 } from "../lib/seats.mjs";
 import {
   cookiesIndicateChatGPTSession,
+  createParkedChatGPTTab,
   deskHasChatGPTSession,
+  deskJsonNewUrl,
   PARKED_WINDOW_X,
   probeDeskSession,
   sessionFromProbe,
+  targetIdFromJsonNew,
 } from "../lib/cdp.mjs";
 import { clientStreamMessage, keyEventParams, mouseEventParams, pointerToCdp } from "../lib/screencast.mjs";
 
@@ -300,6 +303,85 @@ describe("session cookies and input mapping", () => {
       hasSession: probe.hasSession,
     });
     assert.equal(occupied.mode, "tab");
+  });
+
+  it("retries parked-tab create after /json/version is briefly down", async () => {
+    let versionHits = 0;
+    const fetchImpl = async (url) => {
+      if (String(url).includes("/json/version")) {
+        versionHits += 1;
+        if (versionHits < 3) {
+          const err = new Error("timeout");
+          err.name = "TimeoutError";
+          throw err;
+        }
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    const connect = () => ({
+      ready: Promise.resolve(),
+      async send(method) {
+        if (method === "Target.createTarget") return { targetId: "t-retry" };
+        if (method === "Browser.getWindowForTarget") return { windowId: 1 };
+        if (method === "Browser.setWindowBounds") return {};
+        throw new Error(method);
+      },
+      close() {},
+    });
+    const created = await createParkedChatGPTTab("a", { fetchImpl, connect, timeoutMs: 3000, retryMs: 10 });
+    assert.equal(created.targetId, "t-retry");
+    assert.ok(versionHits >= 3);
+  });
+
+  it("creates a tab via HTTP /json/new when the browser debugger is busy", async () => {
+    const calls = [];
+    const fetchImpl = async (url, opts = {}) => {
+      const u = String(url);
+      calls.push({ u, method: opts.method || "GET" });
+      if (u.includes("/json/version")) {
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      if (u.includes("/json/new")) {
+        return { ok: true, json: async () => ({ id: "t-http", type: "page" }) };
+      }
+      throw new Error(`unexpected ${u}`);
+    };
+    const connect = () => ({
+      ready: Promise.resolve(),
+      async send() {
+        throw new Error("无法连接页面");
+      },
+      close() {},
+    });
+    const created = await createParkedChatGPTTab("a", { fetchImpl, connect, timeoutMs: 2000, retryMs: 10 });
+    assert.equal(created.targetId, "t-http");
+    assert.equal(
+      calls.some((c) => c.u.includes("/json/new") && (c.method === "PUT" || c.method === "GET")),
+      true,
+    );
+    assert.match(deskJsonNewUrl("a"), /json\/new\?https%3A%2F%2Fchatgpt\.com/);
+    assert.equal(targetIdFromJsonNew({ targetId: "from-cdp" }), "from-cdp");
+  });
+
+  it("creates a tab via /json/new when /json/version never answers", async () => {
+    const fetchImpl = async (url) => {
+      const u = String(url);
+      if (u.includes("/json/version")) throw new Error("工作区还没准备好");
+      if (u.includes("/json/new")) return { ok: true, json: async () => ({ id: "t-new" }) };
+      throw new Error(u);
+    };
+    const created = await createParkedChatGPTTab("a", {
+      fetchImpl,
+      connect: () => ({
+        ready: Promise.reject(new Error("no")),
+        send: async () => ({}),
+        close() {},
+      }),
+      timeoutMs: 1500,
+      retryMs: 10,
+    });
+    assert.equal(created.targetId, "t-new");
   });
 
   it("maps pointer and key events into CDP Input params", () => {

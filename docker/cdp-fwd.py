@@ -34,7 +34,7 @@ def allowed(peer):
 
 
 def rewrite_host(data: bytes) -> bytes:
-    if not (data.startswith(b"GET ") or data.startswith(b"POST ") or data.startswith(b"HEAD ")):
+    if not (data.startswith(b"GET ") or data.startswith(b"PUT ") or data.startswith(b"POST ") or data.startswith(b"HEAD ")):
         return data
     return HOST_RE.sub(b"Host: 127.0.0.1:9222", data, count=1)
 

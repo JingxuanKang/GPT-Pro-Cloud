@@ -13,7 +13,7 @@ import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, projectOnboardScript, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, evaluateOnTarget, probeDeskSession, targetExists } from "../lib/cdp.mjs";
+import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, evaluateOnTarget, targetExists } from "../lib/cdp.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { WebSocketServer } from "ws";
 
@@ -73,10 +73,12 @@ async function runOnboard(id, name, { create = true, targetId } = {}) {
   await waitForDesk(id, 45000, { targetId });
   let last = { ok: false, error: "工作区还没准备好" };
   for (let i = 0; i < 3; i++) {
-    last = await evaluateInDesk(id, projectOnboardScript(name, { create }), 28000, { targetId });
+    last = await withDeskCdp(id, () => evaluateInDesk(id, projectOnboardScript(name, { create }), 28000, { targetId }));
     if (last?.ok) return last;
     if (!create && last?.error === "找不到项目") {
-      last = await evaluateInDesk(id, projectOnboardScript(name, { create: true }), 28000, { targetId });
+      last = await withDeskCdp(id, () =>
+        evaluateInDesk(id, projectOnboardScript(name, { create: true }), 28000, { targetId }),
+      );
       if (last?.ok) return last;
     }
     await sleep(1500);
@@ -90,7 +92,7 @@ function kickOnboard(id, user, targetId) {
   const uid = user.id;
   const create = !users.readyOn(uid, id);
   const t = setTimeout(() => {
-    withDeskCdp(id, () => runOnboard(id, name, { create, targetId }))
+    runOnboard(id, name, { create, targetId })
       .then((r) => {
         if (r?.ok) users.update(uid, { projectReady: true, projectName: name, projectDesk: id });
       })
@@ -408,17 +410,9 @@ async function handleApi(req, res, url, sess) {
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
     const cdp = users.deskCdpOn(id);
     const extraOccupants = presence.list(id).map((v) => ({ userId: v.id }));
-    const occupied =
-      extraOccupants.some((o) => o.userId && o.userId !== sess.user.id) ||
-      seats.list(id).some((s) => s.userId && s.userId !== sess.user.id);
-    let hasSession = null;
-    if (cdp && occupied) {
-      const probe = await probeDeskSession(id);
-      hasSession = probe.hasSession;
-    }
     let decision;
     try {
-      decision = seats.decide(id, sess.user, { cdp, hasSession, extraOccupants });
+      decision = seats.decide(id, sess.user, { cdp, extraOccupants });
     } catch (e) {
       return json(res, e.status || 409, { error: e.message, cap: seats.cap, code: e.code });
     }
@@ -429,7 +423,7 @@ async function handleApi(req, res, url, sess) {
         const alive = await targetExists(id, seat.targetId);
         if (!alive) {
           try {
-            const created = await withDeskCdp(id, () => createParkedChatGPTTab(id));
+            const created = await createParkedChatGPTTab(id);
             seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId });
           } catch (e) {
             return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
@@ -443,7 +437,7 @@ async function handleApi(req, res, url, sess) {
     } else if (decision.mode === "tab") {
       let created;
       try {
-        created = await withDeskCdp(id, () => createParkedChatGPTTab(id));
+        created = await createParkedChatGPTTab(id);
       } catch (e) {
         return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
       }
@@ -585,7 +579,7 @@ async function handleApi(req, res, url, sess) {
     try {
       const create = !users.readyOn(sess.user.id, id);
       const tab = seats.ofUser(id, sess.user.id);
-      const r = await withDeskCdp(id, () => runOnboard(id, name, { create, targetId: tab?.targetId }));
+      const r = await runOnboard(id, name, { create, targetId: tab?.targetId });
       if (!r?.ok) return json(res, 400, { error: r?.error || "工作区还没准备好" });
       users.update(sess.user.id, { projectReady: true, projectName: name, projectDesk: id });
       return json(res, 200, { ok: true, name, action: r.action || "opened", created: r.action === "created" });

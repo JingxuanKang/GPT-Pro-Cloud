@@ -114,7 +114,9 @@ describe("standalone product", () => {
     assert.match(gw, /startSeatScreencast/);
     assert.match(gw, /TAB_SEATS_MAX/);
     assert.match(gw, /createParkedChatGPTTab/);
-    assert.match(gw, /probeDeskSession/);
+    assert.doesNotMatch(gw, /probeDeskSession/);
+    assert.doesNotMatch(gw, /withDeskCdp\(id, \(\) => createParkedChatGPTTab/);
+    assert.doesNotMatch(gw, /withDeskCdp\(id, \(\) => runOnboard/);
     assert.match(gw, /withDeskCdp/);
     assert.match(gw, /ONBOARD_YIELD_MS/);
     assert.match(gw, /deskCdpOn/);
@@ -249,6 +251,13 @@ describe("standalone product", () => {
     assert.match(cdp, /listDeskCookies/);
     assert.match(cdp, /probeDeskSession/);
     assert.match(cdp, /deskBrowserWs/);
+    assert.match(cdp, /waitForDeskBrowser/);
+    assert.match(cdp, /createTargetViaHttp/);
+    assert.match(cdp, /json\/new/);
+    assert.match(cdp, /timeoutMs/);
+    assert.match(cdp, /retryMs/);
+    const fwd = readFileSync(resolve(root, "docker/cdp-fwd.py"), "utf8");
+    assert.match(fwd, /PUT /);
     const seats = readFileSync(resolve(root, "lib/seats.mjs"), "utf8");
     assert.match(seats, /DEFAULT_TAB_SEAT_CAP/);
     assert.match(seats, /targetsVisibleToSeat/);
