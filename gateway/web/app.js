@@ -146,14 +146,14 @@ function shell(inner) {
          <a href="#/settings" class="top-link ${state.view === "settings" ? "on" : ""}">设置</a>`
       : "";
   return `<div class="app">
-    <header class="top">
+    <header class="topbar"><div class="top">
       <a href="#/" class="brand">${MARK}<span>GPT&#8209;Pro Cloud</span></a>
       <a href="#/" class="top-link ${state.view === "home" ? "on" : ""}">工作台</a>
       ${admin}
       <span class="top-sep"></span>
       <span class="top-user">${av(state.me?.username)}<span>${esc(state.me?.username)}</span></span>
       <button type="button" class="text-btn" id="logout">退出</button>
-    </header>
+    </div></header>
     <main class="page">${inner}</main>
   </div>`;
 }
@@ -429,28 +429,26 @@ function renderSettings() {
       <label class="switch-row">
         <span>
           <b>页面协助</b>
-          <em>打开后自动进项目，顶栏可代点分享。会连接浏览器调试口。</em>
+          <em>打开后网关连接浏览器的调试口，换来下面两件事。</em>
         </span>
         <input type="checkbox" id="assist-toggle" ${on ? "checked" : ""}>
       </label>
       <div class="assist-note">
         <b>说明</b>
-        <p><b>分享</b> — 关掉时，在 ChatGPT 页面里自己点 Share 并复制，链接会经剪贴板落到本机。打开后，顶栏多一个「分享」按钮，由网关代点，链接直接给你。</p>
-        <p><b>分屏席位</b> — 账号已登录且有人在用时，后来的人进入同一张卡片会打开新的 chatgpt.com 标签页，只看到自己那一页。ChatGPT 侧栏仍可能列出别人的对话。每个账号最多同时 3 个分屏席位（可用 TAB_SEATS_MAX 调整，1–8）。</p>
-        <p><b>记忆隔离</b> — 打开后，成员第一次进入某个账号，会自动进入（或创建）一个以其用户名命名的 ChatGPT 项目，并设为仅项目内记忆。对话不读写账号的全局记忆。</p>
-        <p><b>案例</b> — ada 和 bob 共用「账号A」。ada 第一次打开时进入项目「ada」，对话只写进这个项目、不进账号的全局记忆；bob 进的是「bob」。两人仍在同一个 ChatGPT 账号里，记忆互不影响。</p>
+        <p><b>记忆隔离</b> — 每位成员进入账号时，自动进入以其用户名命名的 ChatGPT 项目，并设为仅项目内记忆。同一个号，记忆互不影响。</p>
+        <p><b>分享</b> — 顶栏多一个「分享」按钮，链接直接到手。关闭时自己在页面里点 Share，链接经剪贴板落到本机。</p>
       </div>
     </section>
     <section class="panel">
       <div class="panel-head">
         <b>复制粘贴</b>
-        <em>VNC 首次登录时，本机和桌面之间的复制粘贴是双向的。分屏席位只做当前标签页的文字粘贴与选区复制；剪贴板中继无法按标签页隔离，图片粘贴在分屏里暂不可用。</em>
+        <em>在桌面画面里直接 ⌘C / ⌘V，双向生效。多人分屏时只支持文字，图片粘贴暂不可用。</em>
       </div>
     </section>
     <section class="panel">
       <div class="panel-head">
         <b>出口代理</b>
-        <em>服务器能直连 ChatGPT（如海外机器）就不需要代理，留空即可；服务器在国内等无法直连的网络时必须配置。前置条件：一个服务器可达的 http:// / https:// / socks5:// 代理端点——宿主机上跑的代理客户端填 <code>http://127.0.0.1:7890</code> 这类地址即可，会自动改写为容器可达；也可以填远程代理。填一次后点「全部应用」会下发到每个 ChatGPT 账号，路径与逐行保存相同（立即重启该账号的浏览器）。保存过的地址会出现在上方，点一下就能再用。留空再应用则恢复服务器默认出口。</em>
+        <em>服务器能直连 ChatGPT 就留空。不能直连时填一个 http:// 或 socks5:// 地址（<code>127.0.0.1</code> 会自动改写为容器可达）。保存即重启该账号的浏览器；「全部应用」下发到所有账号，留空应用恢复默认出口。</em>
       </div>
       ${presets ? `<div class="proxy-presets">${presets}</div>` : ""}
       <div class="proxy-row all">
