@@ -25,6 +25,8 @@ GPT-Pro Cloud is a Docker gateway and browser desktop for running signed-in Chat
 
 Each account gets its own Chromium with a persistent profile. One gateway serves the login, the account picker, team management and the remote desktop — entirely in the browser.
 
+Sharing one ChatGPT account with more than one person at a time is **opt-in** (Chromium DevTools / CDP) and **off by default**. Exclusive VNC for a single occupant does not open the debug port.
+
 ## Install
 
 Runs on Docker Compose (a Linux server; Docker Desktop on macOS or Windows), roughly 1 GB of RAM per account.
@@ -112,7 +114,7 @@ There are two ways to share a chat. The basic path needs no automation: click Ch
 
 Memory isolation is what makes one account usable by several people without shared context: with page assist on, the first time a member enters an account, the gateway creates (or reopens) a ChatGPT project named after them, set to **project-only memory**. Chats inside it neither read nor write the account's global memory, members don't leak context to each other, and each member's chats stay grouped in their own project.
 
-Page assist is off by default. It drives chatgpt.com through DevTools selectors, so it can break when OpenAI redesigns the page; with it off you click Share yourself — links still reach your clipboard — and no project onboarding happens.
+Page assist is not a separate switch: it is part of the per-account **multi-user / debug port** toggle (off by default). It drives chatgpt.com through DevTools selectors, so it can break when OpenAI redesigns the page; with the toggle off you click Share yourself — links still reach your clipboard — and no project onboarding happens.
 
 ## Configuration
 
@@ -133,7 +135,7 @@ On **Settings**, **Apply to all** writes the same address to every ChatGPT desk 
 
 ## Concurrent tab seats
 
-One ChatGPT account is still one desktop container and one Chromium profile (`--user-data-dir=/config/chromium`). Two members must not share one VNC mouse after the account is signed in.
+One ChatGPT account is still one desktop container and one Chromium profile (`--user-data-dir=/config/chromium`). Two members must not share one VNC mouse after the account is signed in. Multi-user tab seats require the admin to turn on **允许多人同时使用** for that account; until then a second person is refused.
 
 - First-time ChatGPT login (no session cookies yet) uses the existing KasmVNC path so the owner can sign in.
 - After login, the first occupant still uses that VNC window. Anyone else who opens the same card gets a new `chatgpt.com` tab in the same Chromium. The gateway streams **that tab only** (CDP `Page.startScreencast`) and injects pointer/keyboard with CDP `Input`. The member never sees the tab strip or another seat's target.

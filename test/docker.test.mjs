@@ -71,11 +71,27 @@ describe("deskContainerSpec", () => {
     assert.deepEqual(body.NetworkingConfig.EndpointsConfig["gpt-pro-cloud_default"].Aliases, ["desktop-c"]);
     assert.equal(body.Labels[DESK_LABEL], "c");
     assert.ok(body.Env.includes("PROXY_URL_OVERRIDE="));
+    assert.ok(body.Env.includes("ENABLE_CDP="));
+    assert.equal(body.Env.includes("ENABLE_CDP=1"), false);
     assert.equal(
       body.Env.some((e) => e.startsWith("PROXY_URL_OVERRIDE=") && e !== "PROXY_URL_OVERRIDE="),
       false,
     );
     assert.ok(!body.Labels["com.docker.compose.service"]);
+  });
+
+  it("does not copy a template ENABLE_CDP=1 onto a new desk unless asked", () => {
+    const inspect = {
+      ...TEMPLATE,
+      Config: { ...TEMPLATE.Config, Env: [...TEMPLATE.Config.Env, "ENABLE_CDP=1", "TAB_SEATS=1"] },
+    };
+    const off = deskContainerSpec("c", inspect);
+    assert.ok(off.body.Env.includes("ENABLE_CDP="));
+    assert.equal(off.body.Env.includes("ENABLE_CDP=1"), false);
+    assert.equal(off.body.Env.some((e) => e.startsWith("TAB_SEATS=")), false);
+    const on = deskContainerSpec("c", inspect, { enableCdp: true });
+    assert.ok(on.body.Env.includes("ENABLE_CDP=1"));
+    assert.equal(on.body.Env.includes("ENABLE_CDP="), false);
   });
 });
 

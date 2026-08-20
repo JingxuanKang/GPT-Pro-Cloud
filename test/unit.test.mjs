@@ -9,6 +9,7 @@ import {
   applyDeskProxyLive,
   applyDeskProxiesLive,
 } from "../lib/proxy.mjs";
+import { applyDeskCdpLive, chromiumCdpArgs, deskClipdCdpUrl, parseCdpFlag } from "../lib/cdp.mjs";
 import {
   requirePasswordConfigured,
   hashPassword,
@@ -45,6 +46,33 @@ describe("chromium flags", () => {
     const flags = chromiumExtraFlags({ startUrl: "https://chatgpt.com", proxyUrl: "http://127.0.0.1:7890" });
     assert.ok(flags.includes("--app=https://chatgpt.com"));
     assert.ok(flags.includes("--proxy-server=http://host.docker.internal:7890"));
+  });
+
+  it("omits remote-debugging flags unless CDP is on", () => {
+    assert.deepEqual(chromiumCdpArgs(false), []);
+    assert.deepEqual(chromiumCdpArgs(true), [
+      "--remote-debugging-port=9222",
+      "--remote-debugging-address=127.0.0.1",
+      "--remote-allow-origins=*",
+    ]);
+    assert.equal(parseCdpFlag(""), false);
+    assert.equal(parseCdpFlag("0"), false);
+    assert.equal(parseCdpFlag("1"), true);
+    assert.equal(deskClipdCdpUrl("a"), "http://desktop-a:18790/cdp");
+  });
+
+  it("pushes a CDP toggle to clipd so Chromium restarts with or without the debug port", async () => {
+    const calls = [];
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, method: opts.method, body: opts.body });
+      return { ok: true };
+    };
+    await applyDeskCdpLive("a", true, fetchImpl);
+    await applyDeskCdpLive("b", false, fetchImpl);
+    assert.equal(calls[0].url, "http://desktop-a:18790/cdp");
+    assert.equal(calls[0].body, "1");
+    assert.equal(calls[1].url, "http://desktop-b:18790/cdp");
+    assert.equal(calls[1].body, "0");
   });
 
   it("pushes a proxy to clipd for one desk and for every desk", async () => {

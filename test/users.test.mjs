@@ -1,6 +1,6 @@
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createUserStore } from "../lib/users.mjs";
@@ -74,14 +74,36 @@ describe("users + presence", () => {
     assert.equal(p.list("a", 1000 + 30_000).length, 0);
   });
 
-  it("keeps page assist off until an admin turns it on", () => {
-    assert.equal(store.assistOn(), false);
-    assert.deepEqual(store.settings(), { assist: false });
-    const on = store.setSettings({ assist: true });
-    assert.equal(on.assist, true);
-    assert.equal(store.assistOn(), true);
-    store.setSettings({ assist: false });
-    assert.equal(store.assistOn(), false);
+  it("keeps per-desk CDP / multi-user off until an admin turns it on", () => {
+    assert.equal(store.deskCdpOn("a"), false);
+    assert.equal(store.deskCdpOn("b"), false);
+    assert.equal(store.assistOn("a"), false);
+    assert.deepEqual(store.settings(), {});
+    assert.equal(store.setDeskCdp("a", true), true);
+    assert.equal(store.deskCdpOn("a"), true);
+    assert.equal(store.assistOn("a"), true);
+    assert.equal(store.deskCdpOn("b"), false);
+    assert.equal(store.setDeskCdp("a", false), false);
+    assert.equal(store.deskCdpOn("a"), false);
+    assert.throws(() => store.setDeskCdp("zz", true), /账号不存在/);
+  });
+
+  it("does not treat a leftover global settings.assist as turning CDP on", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gpc-assist-"));
+    const file = join(dir, "users.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        users: [],
+        settings: { assist: true },
+        deskCdp: { a: true, ghost: true },
+      }),
+    );
+    const s = createUserStore({ file, adminUser: "admin", adminPassword: "admin-secret", deskIds: ["a", "b"] });
+    assert.equal(s.deskCdpOn("a"), true);
+    assert.equal(s.deskCdpOn("b"), false);
+    assert.equal(s.assistOn("b"), false);
+    assert.deepEqual(s.settings(), {});
   });
 
   it("lets admin reset a password, revoke desks and disable login", () => {
@@ -173,10 +195,13 @@ describe("users + presence", () => {
     assert.deepEqual(m.desks, ["c"]);
     assert.equal(a.canOpen(m, "c"), true);
     assert.equal(a.canOpen(m, "a"), false);
+    assert.equal(a.deskCdpOn("c"), false);
+    a.setDeskCdp("c", true);
     const b = createUserStore({ file, adminUser: "admin", adminPassword: "admin-secret", deskIds: ["a", "b"] });
     assert.deepEqual(b.listDeskIds(), ["a", "b", "c"]);
     assert.deepEqual(b.extraDeskIds(), ["c"]);
     assert.equal(b.deskNameOf("c"), "客户号");
+    assert.equal(b.deskCdpOn("c"), true);
     assert.ok(b.canOpen(b.login("admin", "admin-secret"), "c"));
     assert.throws(() => a.addDesk("c", "重复"), /已存在/);
     assert.throws(() => a.addDesk("Bad_ID", "x"), /不合法/);
@@ -186,6 +211,7 @@ describe("users + presence", () => {
     assert.equal(a.isExtraDesk("c"), true);
     assert.equal(a.isExtraDesk("a"), false);
     a.removeDesk("c");
+    assert.equal(a.deskCdpOn("c"), false);
     assert.deepEqual(a.listDeskIds(), ["a", "b"]);
     assert.deepEqual(a.extraDeskIds(), []);
     assert.equal(a.deskNameOf("c"), "");

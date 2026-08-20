@@ -158,4 +158,43 @@ describe("presence + kick API", { concurrency: 1 }, () => {
     const list = await req(base, "/api/desks", { cookie: adminCookie });
     assert.equal(list.data.desks.find((d) => d.id === "a").extra, false);
   });
+
+  it("defaults CDP off, rejects a second occupant, and rejects page assist", async () => {
+    const list = await req(base, "/api/desks", { cookie: adminCookie });
+    assert.equal(list.status, 200);
+    assert.equal(list.data.desks.find((d) => d.id === "a").cdp, false);
+    assert.equal(list.data.desks.find((d) => d.id === "b").cdp, false);
+
+    const ada = await req(base, "/api/login", { method: "POST", body: { username: "ada", password: "secret6" } });
+    assert.equal(ada.status, 200);
+    const first = await req(base, "/api/desks/a/open", { method: "POST", cookie: ada.cookie });
+    assert.equal(first.status, 200);
+    assert.equal(first.data.mode, "vnc");
+
+    const created = await req(base, "/api/admin/users", {
+      method: "POST",
+      cookie: adminCookie,
+      body: { username: "cyd", password: "secret6", desks: ["a"] },
+    });
+    assert.equal(created.status, 200);
+    const cyd = await req(base, "/api/login", { method: "POST", body: { username: "cyd", password: "secret6" } });
+    assert.equal(cyd.status, 200);
+    const second = await req(base, "/api/desks/a/open", { method: "POST", cookie: cyd.cookie });
+    assert.equal(second.status, 409);
+    assert.match(second.data.error || "", /未开多人分屏/);
+    assert.equal(second.data.code, "CDP_OFF");
+
+    const share = await req(base, "/api/desks/a/share", { method: "POST", cookie: ada.cookie });
+    assert.equal(share.status, 403);
+    assert.match(share.data.error || "", /调试口|多人/);
+    const onboard = await req(base, "/api/desks/a/onboard", { method: "POST", cookie: ada.cookie });
+    assert.equal(onboard.status, 403);
+    assert.match(onboard.data.error || "", /调试口|多人/);
+
+    const saved = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: true } });
+    assert.ok(saved.status === 200 || saved.status === 502);
+    const after = await req(base, "/api/desks", { cookie: adminCookie });
+    assert.equal(after.data.desks.find((d) => d.id === "a").cdp, true);
+    assert.equal(after.data.desks.find((d) => d.id === "b").cdp, false);
+  });
 });

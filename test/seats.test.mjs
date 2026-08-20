@@ -7,6 +7,7 @@ import {
   createSeatRegistry,
   decideOpenMode,
   DEFAULT_TAB_SEAT_CAP,
+  multiUserOffError,
   parseTabSeatCap,
   publicSeat,
   targetsVisibleToSeat,
@@ -19,22 +20,22 @@ function user(id, username) {
 }
 
 describe("seat assignment", () => {
-  it("sends the first occupant without cookies to VNC", () => {
-    const mode = decideOpenMode({ occupants: [], userId: "1", hasSession: false, tabCount: 0, cap: 3 });
+  it("sends the first occupant to exclusive VNC", () => {
+    const mode = decideOpenMode({ occupants: [], userId: "1", tabCount: 0, cap: 3 });
     assert.equal(mode.mode, "vnc");
     assert.equal(mode.attach, false);
   });
 
-  it("keeps the first occupant on VNC after ChatGPT login when the desk is empty", () => {
-    const mode = decideOpenMode({ occupants: [], userId: "1", hasSession: true, tabCount: 0, cap: 3 });
+  it("keeps the first occupant on VNC when the desk is empty even if CDP is on", () => {
+    const mode = decideOpenMode({ occupants: [], userId: "1", cdp: true, tabCount: 0, cap: 3 });
     assert.equal(mode.mode, "vnc");
   });
 
-  it("assigns a new tab seat when the account is already occupied and cookies exist", () => {
+  it("assigns a new tab seat when CDP is on and the account is already occupied", () => {
     const mode = decideOpenMode({
       occupants: [{ userId: "1" }],
       userId: "2",
-      hasSession: true,
+      cdp: true,
       tabCount: 0,
       cap: 3,
     });
@@ -42,10 +43,22 @@ describe("seat assignment", () => {
     assert.equal(mode.attach, false);
   });
 
+  it("does not require a cookie probe for the second occupant when CDP is on", () => {
+    const mode = decideOpenMode({
+      occupants: [{ userId: "1" }],
+      userId: "2",
+      cdp: true,
+      hasSession: false,
+      tabCount: 0,
+      cap: 3,
+    });
+    assert.equal(mode.mode, "tab");
+  });
+
   it("reattaches the same member to their existing seat instead of opening another tab", () => {
     const reg = createSeatRegistry({ cap: 3 });
     const first = reg.claim("a", user("1", "ada"), { mode: "tab", targetId: "t-ada" });
-    const decision = reg.decide("a", user("1", "ada"), { hasSession: true });
+    const decision = reg.decide("a", user("1", "ada"), { cdp: true });
     assert.equal(decision.attach, true);
     assert.equal(decision.mode, "tab");
     const again = reg.claim("a", user("1", "ada"), { mode: "tab" });
@@ -57,10 +70,23 @@ describe("seat assignment", () => {
   it("does not treat a VNC occupant as consuming a tab seat", () => {
     const reg = createSeatRegistry({ cap: 2 });
     reg.claim("a", user("1", "ada"), { mode: "vnc" });
-    const next = reg.decide("a", user("2", "bob"), { hasSession: true });
+    const next = reg.decide("a", user("2", "bob"), { cdp: true });
     assert.equal(next.mode, "tab");
     reg.claim("a", user("2", "bob"), { mode: "tab", targetId: "t-bob" });
     assert.equal(reg.tabCount("a"), 1);
+  });
+
+  it("rejects a second occupant when CDP / 多人分屏 is off", () => {
+    const reg = createSeatRegistry({ cap: 3 });
+    reg.claim("a", user("1", "ada"), { mode: "vnc" });
+    assert.throws(
+      () => reg.decide("a", user("2", "bob"), { cdp: false }),
+      (err) => err.code === "CDP_OFF" && err.status === 409 && /未开多人分屏/.test(err.message),
+    );
+    assert.throws(
+      () => decideOpenMode({ occupants: [{ userId: "1" }], userId: "2", cdp: false }),
+      (err) => err.code === multiUserOffError().code,
+    );
   });
 });
 
@@ -178,7 +204,7 @@ describe("occupancy cap", () => {
     reg.claim("a", user("2", "bob"), { mode: "tab", targetId: "t-bob" });
     reg.claim("a", user("3", "cyd"), { mode: "tab", targetId: "t-cyd" });
     assert.throws(
-      () => decideOpenMode({ occupants: [{ userId: "1" }, { userId: "2" }, { userId: "3" }], userId: "4", hasSession: true, tabCount: 2, cap: 2 }),
+      () => decideOpenMode({ occupants: [{ userId: "1" }, { userId: "2" }, { userId: "3" }], userId: "4", cdp: true, tabCount: 2, cap: 2 }),
       (err) => err.code === "SEAT_CAP" && err.status === 409,
     );
     assert.throws(
