@@ -14,6 +14,7 @@ import {
 } from "../lib/seats.mjs";
 import {
   cookiesIndicateChatGPTSession,
+  createDeskBrowserPool,
   createParkedChatGPTTab,
   deskHasChatGPTSession,
   deskJsonNewUrl,
@@ -292,10 +293,11 @@ describe("session cookies and input mapping", () => {
         close() {},
       };
     };
-    const probe = await probeDeskSession("a", { fetchImpl, connect });
+    const pool = createDeskBrowserPool();
+    const probe = await probeDeskSession("a", { fetchImpl, connect, pool });
     assert.equal(probe.known, false);
     assert.equal(probe.hasSession, null);
-    assert.equal(await deskHasChatGPTSession("a", { fetchImpl, connect }), null);
+    assert.equal(await deskHasChatGPTSession("a", { fetchImpl, connect, pool }), null);
     const occupied = decideOpenMode({
       occupants: [{ userId: "1" }],
       userId: "2",
@@ -305,36 +307,45 @@ describe("session cookies and input mapping", () => {
     assert.equal(occupied.mode, "tab");
   });
 
-  it("retries parked-tab create after /json/version is briefly down", async () => {
+  it("reuses one /json/version and one browser WS for two tab creates", async () => {
     let versionHits = 0;
+    let connects = 0;
     const fetchImpl = async (url) => {
       if (String(url).includes("/json/version")) {
         versionHits += 1;
-        if (versionHits < 3) {
-          const err = new Error("timeout");
-          err.name = "TimeoutError";
-          throw err;
-        }
         return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
       }
+      if (String(url).includes("/json")) throw new Error(`stampede ${url}`);
       throw new Error(`unexpected ${url}`);
     };
-    const connect = () => ({
-      ready: Promise.resolve(),
-      async send(method) {
-        if (method === "Target.createTarget") return { targetId: "t-retry" };
-        if (method === "Browser.getWindowForTarget") return { windowId: 1 };
-        if (method === "Browser.setWindowBounds") return {};
-        throw new Error(method);
-      },
-      close() {},
-    });
-    const created = await createParkedChatGPTTab("a", { fetchImpl, connect, timeoutMs: 3000, retryMs: 10 });
-    assert.equal(created.targetId, "t-retry");
-    assert.ok(versionHits >= 3);
+    const connect = () => {
+      connects += 1;
+      let creates = 0;
+      return {
+        ready: Promise.resolve(),
+        ws: { readyState: 1, addEventListener() {} },
+        async send(method) {
+          if (method === "Target.createTarget") {
+            creates += 1;
+            return { targetId: `t-${creates}` };
+          }
+          if (method === "Browser.getWindowForTarget") return { windowId: 1 };
+          if (method === "Browser.setWindowBounds") return {};
+          throw new Error(method);
+        },
+        close() {},
+      };
+    };
+    const pool = createDeskBrowserPool();
+    const first = await createParkedChatGPTTab("a", { fetchImpl, connect, pool });
+    const second = await createParkedChatGPTTab("a", { fetchImpl, connect, pool });
+    assert.equal(first.targetId, "t-1");
+    assert.equal(second.targetId, "t-2");
+    assert.equal(versionHits, 1);
+    assert.equal(connects, 1);
   });
 
-  it("creates a tab via HTTP /json/new when the browser debugger is busy", async () => {
+  it("creates a tab via HTTP /json/new when Target.createTarget fails, without a second /json/version", async () => {
     const calls = [];
     const fetchImpl = async (url, opts = {}) => {
       const u = String(url);
@@ -349,13 +360,15 @@ describe("session cookies and input mapping", () => {
     };
     const connect = () => ({
       ready: Promise.resolve(),
+      ws: { readyState: 1, addEventListener() {} },
       async send() {
         throw new Error("无法连接页面");
       },
       close() {},
     });
-    const created = await createParkedChatGPTTab("a", { fetchImpl, connect, timeoutMs: 2000, retryMs: 10 });
+    const created = await createParkedChatGPTTab("a", { fetchImpl, connect, pool: createDeskBrowserPool() });
     assert.equal(created.targetId, "t-http");
+    assert.equal(calls.filter((c) => c.u.includes("/json/version")).length, 1);
     assert.equal(
       calls.some((c) => c.u.includes("/json/new") && (c.method === "PUT" || c.method === "GET")),
       true,
@@ -365,9 +378,13 @@ describe("session cookies and input mapping", () => {
   });
 
   it("creates a tab via /json/new when /json/version never answers", async () => {
+    let versionHits = 0;
     const fetchImpl = async (url) => {
       const u = String(url);
-      if (u.includes("/json/version")) throw new Error("工作区还没准备好");
+      if (u.includes("/json/version")) {
+        versionHits += 1;
+        throw new Error("工作区还没准备好");
+      }
       if (u.includes("/json/new")) return { ok: true, json: async () => ({ id: "t-new" }) };
       throw new Error(u);
     };
@@ -378,10 +395,10 @@ describe("session cookies and input mapping", () => {
         send: async () => ({}),
         close() {},
       }),
-      timeoutMs: 1500,
-      retryMs: 10,
+      pool: createDeskBrowserPool(),
     });
     assert.equal(created.targetId, "t-new");
+    assert.equal(versionHits, 1);
   });
 
   it("maps pointer and key events into CDP Input params", () => {

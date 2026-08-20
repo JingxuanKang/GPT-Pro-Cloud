@@ -13,7 +13,7 @@ import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, projectOnboardScript, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, evaluateOnTarget, targetExists } from "../lib/cdp.mjs";
+import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, evaluateOnTarget, forgetDeskBrowser, targetExists } from "../lib/cdp.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { WebSocketServer } from "ws";
 
@@ -354,6 +354,7 @@ async function handleApi(req, res, url, sess) {
         } catch {
           return json(res, 502, { error: "已保存，但账号容器暂时不可达，重启该容器后生效" });
         }
+        forgetDeskBrowser(rename[1]);
         out.cdp = cdp;
       }
       return json(res, 200, out);
@@ -474,7 +475,7 @@ async function handleApi(req, res, url, sess) {
         try {
           await attached.cdp.send("Input.insertText", { text: text.slice(0, 64 * 1024) }, attached.sessionId);
         } finally {
-          attached.cdp.close();
+          await attached.release();
         }
         return json(res, 200, { ok: true, scoped: "tab" });
       } catch {
