@@ -114,6 +114,7 @@ describe("standalone product", () => {
     assert.match(gw, /startSeatScreencast/);
     assert.match(gw, /TAB_SEATS_MAX/);
     assert.match(gw, /createParkedChatGPTTab/);
+    assert.match(gw, /claimedTargetIds/);
     assert.doesNotMatch(gw, /probeDeskSession/);
     assert.doesNotMatch(gw, /withDeskCdp\(id, \(\) => createParkedChatGPTTab/);
     assert.doesNotMatch(gw, /withDeskCdp\(id, \(\) => runOnboard/);
@@ -208,6 +209,8 @@ describe("standalone product", () => {
     assert.match(ui, /顶栏多一个「分享」/);
     assert.match(ui, /复制粘贴/);
     assert.match(ui, /开启后网关会连浏览器调试口/);
+    assert.match(ui, /每人都是独立标签/);
+    assert.match(ui, /第一人看整桌/);
     assert.match(ui, /单人使用请保持关闭/);
     assert.match(ui, /短暂断开当前画面/);
     assert.match(ui, /ChatGPT 登录状态/);
@@ -261,6 +264,10 @@ describe("standalone product", () => {
     assert.match(cdp, /Target.getTargets/);
     assert.match(cdp, /createTargetViaHttp/);
     assert.match(cdp, /json\/new/);
+    assert.match(cdp, /newWindow: false/);
+    assert.match(cdp, /background: true/);
+    assert.match(cdp, /pickUnclaimedChatGPTTarget/);
+    assert.doesNotMatch(cdp, /newWindow: true/);
     const fwd = readFileSync(resolve(root, "docker/cdp-fwd.py"), "utf8");
     assert.match(fwd, /PUT /);
     assert.match(fwd, /force_connection_close/);
@@ -279,10 +286,13 @@ describe("standalone product", () => {
     assert.match(readme, /off by default/i);
     assert.match(readme, /ClipboardEvent/);
     assert.doesNotMatch(readme, /Images are not pasted on tab seats/);
+    assert.match(readme, /every occupant including the first/);
     assert.doesNotMatch(readme, /second Chrome|second Docker|user-data-dir-\/config\/chromium-/i);
     const zh = readFileSync(resolve(root, "README.zh-CN.md"), "utf8");
     assert.match(zh, /默认关闭/);
     assert.match(zh, /调试口|CDP/);
+    assert.match(zh, /每人都是独立标签/);
+    assert.match(zh, /第一人看整桌/);
     const tabPaste = readFileSync(resolve(root, "lib/tab-paste.mjs"), "utf8");
     assert.match(tabPaste, /ClipboardEvent/);
     assert.match(tabPaste, /document\.activeElement/);
