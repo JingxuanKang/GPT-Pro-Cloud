@@ -29,6 +29,8 @@ Each account gets its own Chromium with a persistent profile. One gateway serves
 
 Runs on Docker Compose (a Linux server; Docker Desktop on macOS or Windows), roughly 1 GB of RAM per account.
 
+This repository is public. `./scripts/up.sh` **pulls** the published GHCR images (`ghcr.io/jingxuankang/gpt-pro-cloud-gateway:latest` and `ghcr.io/jingxuankang/gpt-pro-cloud-desktop:latest`) and starts the stack — it does not `--build` on your machine.
+
 ```bash
 git clone https://github.com/JingxuanKang/GPT-Pro-Cloud.git
 cd GPT-Pro-Cloud
@@ -36,11 +38,23 @@ cp .env.example .env
 ./scripts/up.sh
 ```
 
+Or fetch compose only and pull the same public images:
+
+```bash
+mkdir gpt-pro-cloud && cd gpt-pro-cloud
+curl -fsSLO https://raw.githubusercontent.com/JingxuanKang/GPT-Pro-Cloud/main/docker-compose.yml
+curl -fsSLo .env.example https://raw.githubusercontent.com/JingxuanKang/GPT-Pro-Cloud/main/.env.example
+cp .env.example .env
+docker compose pull && docker compose up -d
+```
+
+If pull fails (images not published yet), build locally with `docker compose up -d --build`, or wait for the publish workflow on `main`.
+
 Private access: a LAN or a VPN such as Tailscale (plain HTTP). Public access: a Cloudflare Tunnel after the administrator exists — [Public access](#public-access).
 
 ## Quick start
 
-Open `http://127.0.0.1:36090` (or the LAN / VPN host) — the first visit walks you through creating the administrator account (or pre-seed it with `AUTH_PASSWORD` in `.env` for automated deployments). Then open each account card once and log in to ChatGPT inside it; the profile survives restarts, so this is a one-time step per account.
+Open `http://127.0.0.1:36090` (or the LAN / VPN host) — the first visit walks you through creating the administrator account (or pre-seed it with `AUTH_PASSWORD` in `.env` for automated deployments). Then open each account card once and log in to ChatGPT inside the desk; that ChatGPT login is a one-time step you do yourself — it is not automated. The profile survives restarts.
 
 After that, any device on the same private network opens the same URL and lands in the signed-in session. Finish the administrator on localhost or the LAN before starting a public tunnel — otherwise a stranger who opens the public URL could claim admin.
 

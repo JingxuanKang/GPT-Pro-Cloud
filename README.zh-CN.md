@@ -29,6 +29,8 @@ GPT-Pro Cloud 是一套 Docker 网关加浏览器桌面，把已登录的 ChatGP
 
 运行环境：Docker Compose（Linux 服务器；macOS / Windows 用 Docker Desktop），每个账号约 1 GB 内存。
 
+仓库是公开的。`./scripts/up.sh` **拉取**已发布的 GHCR 镜像（`ghcr.io/jingxuankang/gpt-pro-cloud-gateway:latest` 与 `ghcr.io/jingxuankang/gpt-pro-cloud-desktop:latest`）再启动，不会在你的机器上 `--build`。
+
 ```bash
 git clone https://github.com/JingxuanKang/GPT-Pro-Cloud.git
 cd GPT-Pro-Cloud
@@ -36,11 +38,23 @@ cp .env.example .env
 ./scripts/up.sh
 ```
 
+或者只拉取 compose，再 pull 同一套公开镜像：
+
+```bash
+mkdir gpt-pro-cloud && cd gpt-pro-cloud
+curl -fsSLO https://raw.githubusercontent.com/JingxuanKang/GPT-Pro-Cloud/main/docker-compose.yml
+curl -fsSLo .env.example https://raw.githubusercontent.com/JingxuanKang/GPT-Pro-Cloud/main/.env.example
+cp .env.example .env
+docker compose pull && docker compose up -d
+```
+
+若 pull 失败（镜像尚未发布），本地构建用 `docker compose up -d --build`，或等 `main` 上的发布工作流跑完。
+
 内网访问走局域网或 Tailscale 这类 VPN（明文 HTTP）。公网访问用 Cloudflare Tunnel，且必须先建好管理员——见[公网访问](#公网访问)。
 
 ## 快速开始
 
-打开 `http://127.0.0.1:36090`（或局域网 / VPN 地址），首次访问会引导你创建管理员账号（也可以在 `.env` 里用 `AUTH_PASSWORD` 预设，适合自动化部署）。然后逐个打开账号卡片，在里面登录 ChatGPT——profile 跨重启保留，所以每个账号只需要做这一次。
+打开 `http://127.0.0.1:36090`（或局域网 / VPN 地址），首次访问会引导你创建管理员账号（也可以在 `.env` 里用 `AUTH_PASSWORD` 预设，适合自动化部署）。然后逐个打开账号卡片，在桌面里登录 ChatGPT——这一步要你自己完成，没有自动化。profile 跨重启保留，所以每个账号只需要做这一次。
 
 之后同一内网里的任何设备打开同一个地址，进去就是已登录的会话。开公网隧道之前，先在本机或局域网建好管理员——否则陌生人打开公网地址就能抢注。
 

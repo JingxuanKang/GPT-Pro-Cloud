@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,13 +13,49 @@ describe("standalone product", () => {
     assert.doesNotMatch(compose, /\.\.\/wechat/);
     assert.doesNotMatch(compose, /woc-panel|woc-wx/);
     assert.match(compose, /build: \.\/docker/);
+    assert.match(compose, /image:\s*ghcr\.io\/jingxuankang\/gpt-pro-cloud-desktop:latest/);
+    assert.match(compose, /image:\s*ghcr\.io\/jingxuankang\/gpt-pro-cloud-gateway:latest/);
+    assert.doesNotMatch(compose, /gpt-pro-cloud-desktop:local|gpt-pro-cloud-gateway:local/);
     assert.match(compose, /\.\/data\/a:\/config/);
     assert.match(compose, /\.\/data\/b:\/config/);
     assert.match(compose, /START_URL: \$\{START_URL:-https:\/\/chatgpt\.com\}/);
     assert.match(compose, /PROXY_URL_OVERRIDE: \$\{PROXY_URL_A:-\}/);
     const proxyInit = readFileSync(resolve(root, "docker/proxy-init.sh"), "utf8");
     assert.match(proxyInit, /PROXY_URL_OVERRIDE/);
+    assert.ok(proxyInit.includes('RAW="${RAW//\\[::1\\]/host.docker.internal}"'));
+    assert.equal(proxyInit.includes('RAW="${RAW//[::1]/host.docker.internal}"'), false);
     assert.doesNotMatch(compose, /9222|9223/);
+    const up = readFileSync(resolve(root, "scripts/up.sh"), "utf8");
+    assert.match(up, /docker compose pull/);
+    assert.match(up, /docker compose up -d/);
+    const happyPath = up.split("if ! docker compose pull")[0];
+    assert.doesNotMatch(happyPath, /--build/);
+    assert.match(up, /docker compose up -d --build/);
+    assert.match(up, /ghcr\.io\/jingxuankang\/gpt-pro-cloud-gateway:latest/);
+    assert.match(up, /ghcr\.io\/jingxuankang\/gpt-pro-cloud-desktop:latest/);
+    for (const name of ["README.md", "README.zh-CN.md", "Deploy.md"]) {
+      const doc = readFileSync(resolve(root, name), "utf8");
+      assert.match(doc, /ghcr\.io\/jingxuankang\/gpt-pro-cloud-gateway:latest/);
+      assert.match(doc, /docker compose pull/);
+      assert.doesNotMatch(doc, /docker login/);
+    }
+  });
+
+  it("proxy-init.sh rewrites [::1] without eating colons or digits", () => {
+    const src = readFileSync(resolve(root, "docker/proxy-init.sh"), "utf8");
+    const rewrites = src
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith('RAW="${RAW//'));
+    assert.equal(rewrites.length, 3);
+    const run = (url) => {
+      const script = ["RAW=$(cat)", ...rewrites, 'printf %s "$RAW"'].join("\n");
+      return execFileSync("bash", ["-c", script], { encoding: "utf8", input: url });
+    };
+    assert.equal(run("http://127.0.0.1:7890"), "http://host.docker.internal:7890");
+    assert.equal(run("socks5://warp:1080"), "socks5://warp:1080");
+    assert.equal(run("http://[::1]:7890"), "http://host.docker.internal:7890");
+    assert.equal(run("socks5://localhost:7891"), "socks5://host.docker.internal:7891");
   });
 
   it("desktop opens ChatGPT and honors rewritten proxy", () => {

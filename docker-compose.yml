@@ -15,7 +15,7 @@ x-desktop-env: &desktop-env
 
 x-desktop: &desktop
   build: ./docker
-  image: gpt-pro-cloud-desktop:local
+  image: ghcr.io/jingxuankang/gpt-pro-cloud-desktop:latest
   extra_hosts:
     - "host.docker.internal:host-gateway"
   shm_size: "1gb"
@@ -31,7 +31,7 @@ services:
     build:
       context: .
       dockerfile: gateway/Dockerfile
-    image: gpt-pro-cloud-gateway:local
+    image: ghcr.io/jingxuankang/gpt-pro-cloud-gateway:latest
     container_name: gpt-pro-cloud-gateway
     environment:
       - PORT=8080
