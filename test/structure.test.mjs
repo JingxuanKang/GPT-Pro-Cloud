@@ -114,6 +114,9 @@ describe("standalone product", () => {
     assert.match(gw, /startSeatScreencast/);
     assert.match(gw, /TAB_SEATS_MAX/);
     assert.match(gw, /createParkedChatGPTTab/);
+    assert.match(gw, /probeDeskSession/);
+    assert.match(gw, /withDeskCdp/);
+    assert.match(gw, /ONBOARD_YIELD_MS/);
     assert.match(gw, /deskCdpOn/);
     assert.match(gw, /applyDeskCdpLive/);
     assert.match(gw, /setDeskCdp/);
@@ -240,6 +243,12 @@ describe("standalone product", () => {
     assert.match(chrome, /waitForDesk/);
     assert.match(chrome, /TAB_CLIP_READ/);
     assert.match(chrome, /evaluateOnTarget/);
+    assert.doesNotMatch(chrome, /webSocketDebuggerUrl/);
+    const cdp = readFileSync(resolve(root, "lib/cdp.mjs"), "utf8");
+    assert.match(cdp, /sessionFromProbe/);
+    assert.match(cdp, /listDeskCookies/);
+    assert.match(cdp, /probeDeskSession/);
+    assert.match(cdp, /deskBrowserWs/);
     const seats = readFileSync(resolve(root, "lib/seats.mjs"), "utf8");
     assert.match(seats, /DEFAULT_TAB_SEAT_CAP/);
     assert.match(seats, /targetsVisibleToSeat/);

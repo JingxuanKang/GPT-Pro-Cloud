@@ -12,7 +12,13 @@ import {
   publicSeat,
   targetsVisibleToSeat,
 } from "../lib/seats.mjs";
-import { cookiesIndicateChatGPTSession, PARKED_WINDOW_X } from "../lib/cdp.mjs";
+import {
+  cookiesIndicateChatGPTSession,
+  deskHasChatGPTSession,
+  PARKED_WINDOW_X,
+  probeDeskSession,
+  sessionFromProbe,
+} from "../lib/cdp.mjs";
 import { clientStreamMessage, keyEventParams, mouseEventParams, pointerToCdp } from "../lib/screencast.mjs";
 
 function user(id, username) {
@@ -43,7 +49,23 @@ describe("seat assignment", () => {
     assert.equal(mode.attach, false);
   });
 
-  it("does not require a cookie probe for the second occupant when CDP is on", () => {
+  it("gives a tab when occupied even if the CDP session check fails", () => {
+    const probe = sessionFromProbe({ error: new Error("无法连接页面") });
+    assert.equal(probe.known, false);
+    assert.equal(probe.hasSession, null);
+    const mode = decideOpenMode({
+      occupants: [{ userId: "1" }],
+      userId: "2",
+      cdp: true,
+      hasSession: probe.hasSession,
+      tabCount: 0,
+      cap: 3,
+    });
+    assert.equal(mode.mode, "tab");
+    assert.notEqual(mode.mode, "vnc");
+  });
+
+  it("does not let a failed cookie probe force a second VNC", () => {
     const mode = decideOpenMode({
       occupants: [{ userId: "1" }],
       userId: "2",
@@ -53,6 +75,17 @@ describe("seat assignment", () => {
       cap: 3,
     });
     assert.equal(mode.mode, "tab");
+  });
+
+  it("uses presence as occupancy when the first member is still beating", () => {
+    const reg = createSeatRegistry({ cap: 3 });
+    const next = reg.decide("a", user("2", "bob"), {
+      cdp: true,
+      hasSession: null,
+      extraOccupants: [{ userId: "1" }],
+    });
+    assert.equal(next.mode, "tab");
+    assert.equal(next.attach, false);
   });
 
   it("reattaches the same member to their existing seat instead of opening another tab", () => {
@@ -223,7 +256,50 @@ describe("session cookies and input mapping", () => {
       cookiesIndicateChatGPTSession([{ name: "__Secure-next-auth.session-token", domain: ".chatgpt.com" }]),
       true,
     );
+    assert.equal(
+      cookiesIndicateChatGPTSession([
+        { name: "__Secure-next-auth.session-token.0" },
+        { name: "__Secure-next-auth.session-token.1" },
+      ]),
+      true,
+    );
+    const named = sessionFromProbe({
+      cookies: [{ name: "__Secure-next-auth.session-token.0" }],
+      error: new Error("无法连接页面"),
+    });
+    assert.equal(named.known, true);
+    assert.equal(named.hasSession, true);
     assert.equal(PARKED_WINDOW_X <= -1000, true);
+  });
+
+  it("treats a busy debugger as unknown session, not logged-out", async () => {
+    const fetchImpl = async (url) => {
+      if (String(url).includes("/json/version")) {
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      throw new Error("no");
+    };
+    const connect = () => {
+      const err = new Error("无法连接页面");
+      return {
+        ready: Promise.reject(err),
+        send() {
+          return Promise.reject(err);
+        },
+        close() {},
+      };
+    };
+    const probe = await probeDeskSession("a", { fetchImpl, connect });
+    assert.equal(probe.known, false);
+    assert.equal(probe.hasSession, null);
+    assert.equal(await deskHasChatGPTSession("a", { fetchImpl, connect }), null);
+    const occupied = decideOpenMode({
+      occupants: [{ userId: "1" }],
+      userId: "2",
+      cdp: true,
+      hasSession: probe.hasSession,
+    });
+    assert.equal(occupied.mode, "tab");
   });
 
   it("maps pointer and key events into CDP Input params", () => {
