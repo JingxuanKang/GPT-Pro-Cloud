@@ -7,7 +7,8 @@ set -e
 RAW="${PROXY_URL_OVERRIDE:-${PROXY_URL:-}}"
 RAW="${RAW//127.0.0.1/host.docker.internal}"
 RAW="${RAW//localhost/host.docker.internal}"
-RAW="${RAW//[::1]/host.docker.internal}"
+# [::1] 必须转义：bash 的 ${var//pat/} 是通配匹配，不转义会变成字符类（匹配 : 和 1）
+RAW="${RAW//\[::1\]/host.docker.internal}"
 
 OUT=/config/.gpc-proxy
 {
