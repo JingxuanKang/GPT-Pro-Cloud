@@ -19,7 +19,9 @@ import {
   deskHasChatGPTSession,
   deskJsonNewUrl,
   PARKED_WINDOW_X,
+  pickUnclaimedChatGPTTarget,
   probeDeskSession,
+  releaseReservedTarget,
   sessionFromProbe,
   targetIdFromJsonNew,
 } from "../lib/cdp.mjs";
@@ -40,15 +42,49 @@ function user(id, username) {
 }
 
 describe("seat assignment", () => {
-  it("sends the first occupant to exclusive VNC", () => {
+  it("sends the first occupant to exclusive VNC when CDP is off", () => {
     const mode = decideOpenMode({ occupants: [], userId: "1", tabCount: 0, cap: 3 });
     assert.equal(mode.mode, "vnc");
     assert.equal(mode.attach, false);
   });
 
-  it("keeps the first occupant on VNC when the desk is empty even if CDP is on", () => {
+  it("gives the first occupant a tab when CDP is on", () => {
     const mode = decideOpenMode({ occupants: [], userId: "1", cdp: true, tabCount: 0, cap: 3 });
-    assert.equal(mode.mode, "vnc");
+    assert.equal(mode.mode, "tab");
+    assert.equal(mode.attach, false);
+  });
+
+  it("gives every concurrent first-open a tab when CDP is on", () => {
+    const one = decideOpenMode({ occupants: [], userId: "1", cdp: true, tabCount: 0, cap: 3 });
+    const two = decideOpenMode({ occupants: [], userId: "2", cdp: true, tabCount: 0, cap: 3 });
+    const three = decideOpenMode({ occupants: [], userId: "3", cdp: true, tabCount: 0, cap: 3 });
+    assert.equal(one.mode, "tab");
+    assert.equal(two.mode, "tab");
+    assert.equal(three.mode, "tab");
+  });
+
+  it("opens user1 then user2 then user3 as tabs when CDP is on", () => {
+    const reg = createSeatRegistry({ cap: 3 });
+    const first = reg.decide("a", user("1", "ada"), { cdp: true });
+    assert.equal(first.mode, "tab");
+    reg.claim("a", user("1", "ada"), { mode: "tab", targetId: "t-ada" });
+    const second = reg.decide("a", user("2", "bob"), { cdp: true });
+    assert.equal(second.mode, "tab");
+    reg.claim("a", user("2", "bob"), { mode: "tab", targetId: "t-bob" });
+    const third = reg.decide("a", user("3", "cyd"), { cdp: true });
+    assert.equal(third.mode, "tab");
+  });
+
+  it("does not reattach a leftover VNC seat when CDP is on", () => {
+    const reg = createSeatRegistry({ cap: 3 });
+    const leftover = reg.claim("a", user("1", "ada"), { mode: "vnc" });
+    const decision = reg.decide("a", user("1", "ada"), { cdp: true });
+    assert.equal(decision.mode, "tab");
+    assert.equal(decision.attach, false);
+    const upgraded = reg.claim("a", user("1", "ada"), { mode: "tab", targetId: "t-ada" });
+    assert.equal(upgraded.id, leftover.id);
+    assert.equal(upgraded.mode, "tab");
+    assert.equal(upgraded.targetId, "t-ada");
   });
 
   it("assigns a new tab seat when CDP is on and the account is already occupied", () => {
@@ -409,6 +445,153 @@ describe("session cookies and input mapping", () => {
     });
     assert.equal(created.targetId, "t-new");
     assert.equal(versionHits, 1);
+  });
+
+  it("creates a background tab, not a new visible window", async () => {
+    const creates = [];
+    const fetchImpl = async (url) => {
+      if (String(url).includes("/json/version")) {
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    const connect = () => ({
+      ready: Promise.resolve(),
+      ws: { readyState: 1, addEventListener() {} },
+      async send(method, params) {
+        if (method === "Target.getTargets") return { targetInfos: [] };
+        if (method === "Target.createTarget") {
+          creates.push(params);
+          return { targetId: "t-bg" };
+        }
+        if (method === "Browser.getWindowForTarget") return { windowId: 1 };
+        if (method === "Browser.setWindowBounds") return {};
+        throw new Error(method);
+      },
+      close() {},
+    });
+    const created = await createParkedChatGPTTab("a", { fetchImpl, connect, pool: createDeskBrowserPool() });
+    assert.equal(created.targetId, "t-bg");
+    assert.equal(creates.length, 1);
+    assert.equal(creates[0].newWindow, false);
+    assert.equal(creates[0].background, true);
+    releaseReservedTarget("a", "t-bg");
+  });
+
+  it("adopts an existing unclaimed ChatGPT target instead of opening a window", async () => {
+    let creates = 0;
+    const fetchImpl = async (url) => {
+      if (String(url).includes("/json/version")) {
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    const connect = () => ({
+      ready: Promise.resolve(),
+      ws: { readyState: 1, addEventListener() {} },
+      async send(method) {
+        if (method === "Target.getTargets") {
+          return {
+            targetInfos: [
+              { targetId: "t-kiosk", type: "page", url: "https://chatgpt.com/" },
+              { targetId: "t-other", type: "page", url: "https://example.com/" },
+            ],
+          };
+        }
+        if (method === "Target.createTarget") {
+          creates += 1;
+          return { targetId: "t-new" };
+        }
+        if (method === "Browser.getWindowForTarget") return { windowId: 9 };
+        if (method === "Browser.setWindowBounds") return {};
+        throw new Error(method);
+      },
+      close() {},
+    });
+    const created = await createParkedChatGPTTab("a", { fetchImpl, connect, pool: createDeskBrowserPool() });
+    assert.equal(created.targetId, "t-kiosk");
+    assert.equal(created.adopted, true);
+    assert.equal(creates, 0);
+    releaseReservedTarget("a", "t-kiosk");
+  });
+
+  it("does not adopt a ChatGPT target another seat already owns", async () => {
+    const fetchImpl = async (url) => {
+      if (String(url).includes("/json/version")) {
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    const connect = () => ({
+      ready: Promise.resolve(),
+      ws: { readyState: 1, addEventListener() {} },
+      async send(method, params) {
+        if (method === "Target.getTargets") {
+          return { targetInfos: [{ targetId: "t-ada", type: "page", url: "https://chatgpt.com/" }] };
+        }
+        if (method === "Target.createTarget") return { targetId: "t-bob" };
+        if (method === "Browser.getWindowForTarget") return { windowId: 1 };
+        if (method === "Browser.setWindowBounds") return {};
+        throw new Error(`${method} ${JSON.stringify(params || {})}`);
+      },
+      close() {},
+    });
+    const created = await createParkedChatGPTTab("a", {
+      fetchImpl,
+      connect,
+      pool: createDeskBrowserPool(),
+      claimedTargetIds: ["t-ada"],
+    });
+    assert.equal(created.targetId, "t-bob");
+    assert.equal(created.adopted, undefined);
+    releaseReservedTarget("a", "t-bob");
+  });
+
+  it("picks only an unclaimed ChatGPT page as an adoptable target", () => {
+    const targets = [
+      { id: "t-ada", type: "page", url: "https://chatgpt.com/" },
+      { id: "t-new", type: "page", url: "https://chatgpt.com/c/xyz" },
+      { id: "browser", type: "browser" },
+    ];
+    assert.equal(pickUnclaimedChatGPTTarget(targets, { claimedTargetIds: ["t-ada"] })?.id, "t-new");
+    assert.equal(pickUnclaimedChatGPTTarget(targets, { claimedTargetIds: ["t-ada", "t-new"] }), null);
+  });
+
+  it("does not let two concurrent creates adopt the same existing target", async () => {
+    const fetchImpl = async (url) => {
+      if (String(url).includes("/json/version")) {
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    let creates = 0;
+    const connect = () => ({
+      ready: Promise.resolve(),
+      ws: { readyState: 1, addEventListener() {} },
+      async send(method) {
+        if (method === "Target.getTargets") {
+          return { targetInfos: [{ targetId: "t-kiosk", type: "page", url: "https://chatgpt.com/" }] };
+        }
+        if (method === "Target.createTarget") {
+          creates += 1;
+          return { targetId: `t-new-${creates}` };
+        }
+        if (method === "Browser.getWindowForTarget") return { windowId: 1 };
+        if (method === "Browser.setWindowBounds") return {};
+        throw new Error(method);
+      },
+      close() {},
+    });
+    const pool = createDeskBrowserPool();
+    const [first, second] = await Promise.all([
+      createParkedChatGPTTab("race", { fetchImpl, connect, pool }),
+      createParkedChatGPTTab("race", { fetchImpl, connect, pool }),
+    ]);
+    const ids = new Set([first.targetId, second.targetId]);
+    assert.equal(ids.size, 2);
+    assert.equal(ids.has("t-kiosk"), true);
+    releaseReservedTarget("race", first.targetId);
+    releaseReservedTarget("race", second.targetId);
   });
 
   it("maps pointer and key events into CDP Input params", () => {
