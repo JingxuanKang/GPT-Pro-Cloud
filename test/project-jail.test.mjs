@@ -1,0 +1,380 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { CHATGPT_START } from "../lib/cdp.mjs";
+import {
+  bounceUrl,
+  canonicalizeProjectUrl,
+  isAllowedJailUrl,
+  isChatGPTProjectPath,
+  isDownloadOrAssetUrl,
+  isMainFrameNav,
+  isOtherProjectUrl,
+  isOwnProjectUrl,
+  jailNavUrl,
+  parseChatGPTProjectUrl,
+  projectJailScript,
+  pickNamedProjectHref,
+  projectUrlFromOnboard,
+  seatStartUrl,
+  slugifyProjectName,
+  shouldBlockProjectClick,
+  shouldHideOtherProject,
+  armSeatJail,
+  isBlockedJailChord,
+  isCopyOrPasteChord,
+  shouldCloseExtraTarget,
+  shouldForwardSeatKey,
+  jailHotkeyScript,
+} from "../lib/project-jail.mjs";
+
+const ADA = "https://chatgpt.com/g/g-p-aaa111-ada/project";
+const ADA_CHAT = "https://chatgpt.com/g/g-p-aaa111-ada/c/conv-1";
+const BOB = "https://chatgpt.com/g/g-p-bbb222-bob/project";
+const BOB_CHAT = "https://chatgpt.com/g/g-p-bbb222-bob/c/conv-9";
+
+describe("ChatGPT project URL helpers", () => {
+  it("parses /g/g-p-<id>-<slug>/project and canonicalizes to the project home", () => {
+    const parsed = parseChatGPTProjectUrl(ADA_CHAT);
+    assert.equal(parsed.id, "aaa111");
+    assert.equal(parsed.slug, "ada");
+    assert.equal(parsed.token, "g-p-aaa111-ada");
+    assert.equal(parsed.home, ADA);
+    assert.equal(canonicalizeProjectUrl(ADA_CHAT), ADA);
+    assert.equal(canonicalizeProjectUrl("https://example.com/"), "");
+    assert.equal(isChatGPTProjectPath("/g/g-p-aaa111-ada/project"), true);
+    assert.equal(isChatGPTProjectPath("/c/conv-1"), false);
+  });
+
+  it("treats chats inside the same project as own, and another /g/g-p- as other", () => {
+    assert.equal(isOwnProjectUrl(ADA, ADA), true);
+    assert.equal(isOwnProjectUrl(ADA_CHAT, ADA), true);
+    assert.equal(isOwnProjectUrl(BOB, ADA), false);
+    assert.equal(isOtherProjectUrl(BOB, ADA), true);
+    assert.equal(isOtherProjectUrl(BOB_CHAT, ADA), true);
+    assert.equal(isOtherProjectUrl("https://chatgpt.com/c/plain", ADA), false);
+  });
+});
+
+describe("jail allowlist and bounce", () => {
+  it("allows the member project, chats in that project, login/SSO, and assets", () => {
+    const allowed = [
+      ADA,
+      ADA_CHAT,
+      "https://chatgpt.com/g/g-p-aaa111-ada",
+      "https://chatgpt.com/auth/login",
+      "https://chatgpt.com/sign-in",
+      "https://auth.openai.com/log-in",
+      "https://accounts.google.com/o/oauth2/auth",
+      "https://appleid.apple.com/auth/authorize",
+      "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+      "https://cdn.oaistatic.com/assets/app.js",
+      "blob:https://chatgpt.com/g/g-p-aaa111-ada/1",
+      "data:image/png;base64,aaa",
+    ];
+    for (const href of allowed) {
+      assert.equal(isAllowedJailUrl(href, ADA), true, href);
+      assert.equal(bounceUrl(href, ADA), null, href);
+    }
+    assert.equal(isDownloadOrAssetUrl("https://files.oaiusercontent.com/out.png"), true);
+  });
+
+  it("bounces another /g/g-p-…/project and other ChatGPT surfaces back to the member project", () => {
+    const blocked = [
+      BOB,
+      BOB_CHAT,
+      "https://chatgpt.com/",
+      "https://chatgpt.com",
+      "https://chatgpt.com/c/someone-else",
+      "https://chatgpt.com/gpts",
+      "https://chat.openai.com/",
+    ];
+    for (const href of blocked) {
+      assert.equal(isAllowedJailUrl(href, ADA), false, href);
+      assert.equal(bounceUrl(href, ADA), ADA, href);
+    }
+  });
+
+  it("does not jail when there is no member project URL", () => {
+    assert.equal(isAllowedJailUrl(BOB, ""), true);
+    assert.equal(bounceUrl(BOB, ""), null);
+    assert.equal(bounceUrl("https://chatgpt.com/", ""), null);
+  });
+});
+
+describe("sidebar hide and click block", () => {
+  it("hides other projects in the sidebar and leaves conversation titles alone", () => {
+    assert.equal(shouldHideOtherProject({ href: BOB, home: ADA, inSidebar: true }), true);
+    assert.equal(shouldHideOtherProject({ href: ADA, home: ADA, inSidebar: true }), false);
+    assert.equal(shouldHideOtherProject({ href: "/c/other-chat", home: ADA, inSidebar: true }), false);
+    assert.equal(shouldHideOtherProject({ href: BOB, home: ADA, inSidebar: false }), false);
+  });
+
+  it("blocks clicks to another /g/g-p- path and allows own project and login", () => {
+    assert.equal(shouldBlockProjectClick({ href: BOB, home: ADA }), true);
+    assert.equal(shouldBlockProjectClick({ href: BOB_CHAT, home: ADA }), true);
+    assert.equal(shouldBlockProjectClick({ href: ADA_CHAT, home: ADA }), false);
+    assert.equal(shouldBlockProjectClick({ href: "https://chatgpt.com/auth/login", home: ADA }), false);
+    assert.equal(shouldBlockProjectClick({ href: BOB, home: "" }), false);
+  });
+});
+
+describe("seat start URL and onboard capture", () => {
+  it("opens the member project only when CDP is on and a project URL is known", () => {
+    assert.equal(seatStartUrl({ cdp: true, projectUrl: ADA_CHAT }), ADA);
+    assert.equal(seatStartUrl({ cdp: true, projectUrl: "" }), CHATGPT_START);
+    assert.equal(seatStartUrl({ cdp: false, projectUrl: ADA }), CHATGPT_START);
+    assert.equal(seatStartUrl({}), CHATGPT_START);
+  });
+
+  it("reads a project URL from an onboard result", () => {
+    assert.equal(projectUrlFromOnboard({ ok: true, url: ADA_CHAT }), ADA);
+    assert.equal(projectUrlFromOnboard({ ok: true, action: "opened" }), "");
+  });
+
+  it("picks the named sidebar project even when projectReady was already true", () => {
+    assert.equal(slugifyProjectName("Test 1"), "test-1");
+    assert.equal(slugifyProjectName("test1"), "test1");
+    const links = [
+      { href: "https://chatgpt.com/g/g-p-aaa111-test1/project", text: "test1" },
+      { href: "https://chatgpt.com/g/g-p-bbb222-test2/project", text: "test2" },
+      { href: "https://chatgpt.com/g/g-p-ccc333-admin/project", text: "admin" },
+    ];
+    assert.equal(pickNamedProjectHref("test1", links), "https://chatgpt.com/g/g-p-aaa111-test1/project");
+    assert.equal(pickNamedProjectHref("test2", links), "https://chatgpt.com/g/g-p-bbb222-test2/project");
+    assert.equal(pickNamedProjectHref("admin", links), "https://chatgpt.com/g/g-p-ccc333-admin/project");
+    assert.equal(pickNamedProjectHref("test", links), "");
+    assert.equal(pickNamedProjectHref("test1", []), "");
+    assert.equal(
+      pickNamedProjectHref("ada", [{ href: ADA_CHAT, text: "Ada Lovelace" }]),
+      ADA,
+    );
+  });
+});
+
+describe("injected jail script", () => {
+  it("embeds the member home and hide/block hooks, not a global allowlist", () => {
+    const src = projectJailScript(ADA);
+    assert.match(src, /g-p-aaa111-ada/);
+    assert.match(src, /data-gpc-hidden-project/);
+    assert.match(src, /location\.replace/);
+    assert.match(src, /auth\.openai\.com/);
+    assert.doesNotMatch(src, /completely impossible/i);
+    assert.equal(projectJailScript(""), "void 0");
+    const keys = jailHotkeyScript();
+    assert.match(keys, /window\.open/);
+    assert.match(keys, /F12/);
+    assert.match(keys, /KeyT|letter/);
+  });
+});
+
+describe("escape hotkeys and extra targets", () => {
+  const cmd = (code, extra = {}) => ({ code, key: extra.key, modifiers: 2, ...extra });
+  const meta = (code) => ({ code, modifiers: 4 });
+
+  it("blocks new-tab / window / address-bar / devtools chords and keeps C/V", () => {
+    const blocked = [
+      cmd("KeyT"),
+      meta("KeyT"),
+      cmd("KeyN"),
+      cmd("KeyL"),
+      cmd("KeyW"),
+      { code: "Tab", key: "Tab", modifiers: 2 },
+      { code: "Tab", key: "Tab", modifiers: 2 + 8 },
+      { code: "KeyT", modifiers: 2 + 8 },
+      { code: "KeyD", modifiers: 1 },
+      { code: "F6", key: "F6", modifiers: 0 },
+      { code: "F12", key: "F12", modifiers: 0 },
+      { code: "KeyI", modifiers: 2 + 8 },
+      { code: "KeyJ", modifiers: 2 + 8 },
+      { code: "KeyC", modifiers: 2 + 8 },
+      cmd("KeyU"),
+    ];
+    for (const msg of blocked) {
+      assert.equal(isBlockedJailChord(msg), true, JSON.stringify(msg));
+      assert.equal(shouldForwardSeatKey(msg), false, JSON.stringify(msg));
+    }
+    assert.equal(isCopyOrPasteChord(cmd("KeyC")), true);
+    assert.equal(isCopyOrPasteChord(cmd("KeyV")), true);
+    assert.equal(isBlockedJailChord(cmd("KeyC")), false);
+    assert.equal(isBlockedJailChord(cmd("KeyV")), false);
+    assert.equal(shouldForwardSeatKey(cmd("KeyC")), true);
+    assert.equal(isBlockedJailChord({ code: "Tab", key: "Tab", modifiers: 0 }), false);
+    assert.equal(isBlockedJailChord({ code: "KeyT", key: "t", modifiers: 0 }), false);
+    assert.equal(isBlockedJailChord({ code: "KeyA", modifiers: 2 }), false);
+  });
+
+  it("closes a page target opened from this seat and leaves other seats alone", () => {
+    const created = {
+      method: "Target.targetCreated",
+      params: { targetInfo: { targetId: "t-popup", type: "page", openerId: "t-ada", url: "https://chatgpt.com/" } },
+    };
+    assert.equal(shouldCloseExtraTarget(created, "t-ada"), true);
+    assert.equal(shouldCloseExtraTarget(created, "t-bob"), false);
+    assert.equal(
+      shouldCloseExtraTarget(
+        { method: "Target.targetCreated", params: { targetInfo: { targetId: "t-bob", type: "page" } } },
+        "t-ada",
+      ),
+      false,
+    );
+  });
+});
+
+describe("CDP Page.navigate lock", () => {
+  it("injects the jail and bounces another project navigation back to home", async () => {
+    const calls = [];
+    const listeners = [];
+    const send = async (method, params) => {
+      calls.push({ method, params });
+      if (method === "Runtime.evaluate" && params?.expression === "location.href") {
+        return { result: { value: ADA } };
+      }
+      return {};
+    };
+    const jail = await armSeatJail({
+      send,
+      on: (fn) => {
+        listeners.push(fn);
+        return () => {};
+      },
+      sessionId: "s1",
+      homeUrl: ADA,
+      targetId: "t-ada",
+    });
+    assert.equal(jail.armed, true);
+    assert.equal(jail.home, ADA);
+    assert.equal(
+      calls.some((c) => c.method === "Page.addScriptToEvaluateOnNewDocument" && /g-p-aaa111-ada/.test(c.params.source)),
+      true,
+    );
+    assert.equal(calls.some((c) => c.method === "Page.enable"), true);
+    assert.equal(
+      calls.some((c) => c.method === "Page.setWindowOpenHandler" && c.params.action === "deny"),
+      true,
+    );
+
+    const nav = {
+      method: "Page.frameNavigated",
+      sessionId: "s1",
+      params: { frame: { url: BOB, parentId: undefined } },
+    };
+    assert.equal(isMainFrameNav(nav), true);
+    assert.equal(jailNavUrl(nav), BOB);
+    listeners[0](nav);
+    await Promise.resolve();
+    assert.equal(
+      calls.some((c) => c.method === "Page.navigate" && c.params.url === ADA),
+      true,
+    );
+    listeners[0]({
+      method: "Target.targetCreated",
+      params: { targetInfo: { targetId: "t-popup", type: "page", openerId: "t-ada" } },
+    });
+    await Promise.resolve();
+    assert.equal(
+      calls.some((c) => c.method === "Target.closeTarget" && c.params.targetId === "t-popup"),
+      true,
+    );
+  });
+
+  it("does not bounce login or an own-project chat, and ignores child frames", async () => {
+    const calls = [];
+    const listeners = [];
+    const send = async (method, params) => {
+      calls.push({ method, params });
+      if (method === "Runtime.evaluate" && params?.expression === "location.href") {
+        return { result: { value: ADA } };
+      }
+      return {};
+    };
+    await armSeatJail({
+      send,
+      on: (fn) => {
+        listeners.push(fn);
+        return () => {};
+      },
+      sessionId: "s1",
+      homeUrl: ADA,
+    });
+    const before = calls.filter((c) => c.method === "Page.navigate").length;
+    listeners[0]({
+      method: "Page.frameNavigated",
+      sessionId: "s1",
+      params: { frame: { url: ADA_CHAT } },
+    });
+    listeners[0]({
+      method: "Page.frameNavigated",
+      sessionId: "s1",
+      params: { frame: { url: "https://auth.openai.com/log-in", parentId: undefined } },
+    });
+    listeners[0]({
+      method: "Page.frameNavigated",
+      sessionId: "s1",
+      params: { frame: { url: BOB, parentId: "child" } },
+    });
+    await Promise.resolve();
+    assert.equal(calls.filter((c) => c.method === "Page.navigate").length, before);
+  });
+
+  it("bounces chatgpt.com to the project home and re-injects jail globals", async () => {
+    const calls = [];
+    const listeners = [];
+    const send = async (method, params) => {
+      calls.push({ method, params });
+      if (method === "Runtime.evaluate" && params?.expression === "location.href") {
+        return { result: { value: "https://chatgpt.com/" } };
+      }
+      return {};
+    };
+    const jail = await armSeatJail({
+      send,
+      on: (fn) => {
+        listeners.push(fn);
+        return () => {};
+      },
+      sessionId: "s1",
+      homeUrl: ADA,
+      targetId: "t-ada",
+    });
+    assert.equal(jail.armed, true);
+    assert.equal(
+      calls.some((c) => c.method === "Page.navigate" && c.params.url === ADA),
+      true,
+    );
+    assert.ok(
+      calls.some(
+        (c) =>
+          c.method === "Runtime.evaluate" &&
+          typeof c.params?.expression === "string" &&
+          c.params.expression.includes("__gpcProjectJail"),
+      ),
+    );
+    const before = calls.filter((c) => c.method === "Runtime.evaluate").length;
+    listeners[0]({
+      method: "Page.frameNavigated",
+      sessionId: "s1",
+      params: { frame: { url: ADA, parentId: undefined } },
+    });
+    await Promise.resolve();
+    assert.ok(calls.filter((c) => c.method === "Runtime.evaluate").length > before);
+  });
+
+  it("still arms the escape lock without a project URL, and stays off without send", async () => {
+    const calls = [];
+    const jail = await armSeatJail({
+      send: async (method, params) => {
+        calls.push({ method, params });
+        return {};
+      },
+      sessionId: "s1",
+      targetId: "t-1",
+      homeUrl: "",
+    });
+    assert.equal(jail.armed, true);
+    assert.equal(jail.home, "");
+    assert.equal(calls.some((c) => c.method === "Page.setWindowOpenHandler"), true);
+    assert.equal(calls.some((c) => c.method === "Page.addScriptToEvaluateOnNewDocument"), true);
+    const off = await armSeatJail({ homeUrl: ADA });
+    assert.equal(off.armed, false);
+  });
+});

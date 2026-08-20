@@ -150,6 +150,16 @@ describe("seat assignment", () => {
     assert.equal(reg.tabCount("a"), 1);
   });
 
+  it("stores the member project URL on the seat for the jail", () => {
+    const reg = createSeatRegistry({ cap: 3 });
+    const home = "https://chatgpt.com/g/g-p-aaa111-ada/project";
+    const seat = reg.claim("a", user("1", "ada"), { mode: "tab", targetId: "t-ada", projectUrl: home });
+    assert.equal(seat.projectUrl, home);
+    const again = reg.claim("a", user("1", "ada"), { projectUrl: home });
+    assert.equal(again.id, seat.id);
+    assert.equal(again.projectUrl, home);
+  });
+
   it("does not treat a VNC occupant as consuming a tab seat", () => {
     const reg = createSeatRegistry({ cap: 2 });
     reg.claim("a", user("1", "ada"), { mode: "vnc" });

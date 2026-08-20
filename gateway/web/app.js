@@ -445,6 +445,7 @@ function renderSettings() {
         <b>开启后一并提供</b>
         <p><b>分屏席位</b> — 开启多人后每人都是独立标签（含第一人），不再有人看整张桌面。每人只看到自己的 ChatGPT 标签。</p>
         <p><b>记忆隔离</b> — 每位成员进入时自动进入以其用户名命名的 ChatGPT 项目，并设为仅项目内记忆。同一个号，记忆互不影响。</p>
+        <p><b>项目页锁定</b> — 开启多人后，页面会把每位成员留在自己的项目里：侧栏里别人的项目会藏起来，点到别人的项目会回到你的项目。占用者不能再开 Chrome 标签、窗口或地址栏（网关自己的分屏席位不受影响）。这是页面体验锁定，不是服务端权限；对话列表仍可能出现别人的标题。关闭多人时不做按人锁定（整桌共用一个画面；若起始页贴的是某个项目 URL，那是整桌同一个项目）。</p>
         <p><b>分享</b> — 顶栏多一个「分享」按钮，链接直接到手。关闭时自己在页面里点 Share，链接经剪贴板落到本机。</p>
         <p>切换会短暂断开当前画面；ChatGPT 登录状态留在本机 profile 里，不会因为开关调试口而掉登录。</p>
       </div>
@@ -793,13 +794,34 @@ function bindSeatCast() {
     send({ type: "mouse", event: "mouseWheel", x: p.x, y: p.y, button: "none", deltaX: e.deltaX, deltaY: e.deltaY, modifiers: mods(e) });
   };
   canvas.oncontextmenu = (e) => e.preventDefault();
+  const isSeatEscapeChord = (e) => {
+    const cmd = e.ctrlKey || e.metaKey;
+    const code = e.code || "";
+    const key = e.key || "";
+    const letter = /^Key[A-Z]$/i.test(code) ? code.slice(3).toUpperCase() : /^[a-z]$/i.test(key) ? key.toUpperCase() : "";
+    if (cmd && !e.altKey && !e.shiftKey && (letter === "C" || letter === "V")) return false;
+    if (code === "F6" || key === "F6" || code === "F12" || key === "F12") return true;
+    if (e.altKey && !cmd && letter === "D") return true;
+    if (!cmd) return false;
+    if (code === "Tab" || key === "Tab") return true;
+    if (e.shiftKey && (letter === "T" || letter === "I" || letter === "J" || letter === "C")) return true;
+    return !e.altKey && (letter === "T" || letter === "N" || letter === "L" || letter === "W" || letter === "U");
+  };
   canvas.onkeydown = (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.code === "KeyV" || e.code === "KeyC")) return;
+    if (isSeatEscapeChord(e)) {
+      e.preventDefault();
+      return;
+    }
     e.preventDefault();
     send({ type: "key", event: "keyDown", key: e.key, code: e.code, modifiers: mods(e) });
   };
   canvas.onkeyup = (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.code === "KeyV" || e.code === "KeyC")) return;
+    if (isSeatEscapeChord(e)) {
+      e.preventDefault();
+      return;
+    }
     send({ type: "key", event: "keyUp", key: e.key, code: e.code, modifiers: mods(e) });
   };
 

@@ -34,6 +34,35 @@ if "gpc-no-chrome" not in text:
 </applications>""",
         1,
     )
+# VNC-only best-effort: swallow Chrome escape chords. Tab seats go through CDP Input instead.
+if "gpc-jail-keys" not in text:
+    keys = (
+        "C-T",
+        "C-S-T",
+        "C-N",
+        "C-S-N",
+        "C-W",
+        "C-S-W",
+        "C-L",
+        "C-Tab",
+        "C-S-Tab",
+        "A-D",
+        "F6",
+        "F12",
+        "C-S-I",
+        "C-S-J",
+        "C-S-C",
+        "C-U",
+    )
+    for key in keys:
+        text = re.sub(
+            rf'<keybind\s+key="{re.escape(key)}">.*?</keybind>',
+            "",
+            text,
+            flags=re.DOTALL,
+        )
+    lock = "\n".join(f'  <keybind key="{key}"><action name="Unfocus"/></keybind>' for key in keys)
+    text = text.replace("</keyboard>", f"  <!-- gpc-jail-keys -->\n{lock}\n</keyboard>", 1)
 dst.write_text(text, encoding="utf-8")
 PY
 

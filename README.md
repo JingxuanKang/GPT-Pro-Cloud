@@ -112,9 +112,13 @@ Tab seats exist only when multi-user / CDP is on for that account. They cannot u
 
 There are two ways to share a chat. The basic path needs no automation: click ChatGPT's own Share inside the page and copy — the link reaches your local clipboard through the clipboard relay. With **page assist** on, the top bar gains a Share button that the gateway clicks for you, handing you the link directly.
 
-Memory isolation is what makes one account usable by several people without shared context: with page assist on, the first time a member enters an account, the gateway creates (or reopens) a ChatGPT project named after them, set to **project-only memory**. Chats inside it neither read nor write the account's global memory, members don't leak context to each other, and each member's chats stay grouped in their own project.
+Memory isolation is what makes one account usable by several people without shared context: with page assist on, the first time a member enters an account, the gateway creates (or reopens) a ChatGPT project named after them, set to **project-only memory**, and opens that seat on `https://chatgpt.com/g/g-p-<id>-<slug>/project`. Chats inside it neither read nor write the account's global memory, members don't leak context to each other, and each member's chats stay grouped in their own project.
 
-Page assist is not a separate switch: it is part of the per-account **multi-user / debug port** toggle (off by default). It drives chatgpt.com through DevTools selectors, so it can break when OpenAI redesigns the page; with the toggle off you click Share yourself — links still reach your clipboard — and no project onboarding happens.
+When multi-user / CDP is **on**, the page keeps each member in their own project: other project links are hidden in the sidebar, and a click or navigation to another `/g/g-p-…` path is sent back to that member's project. The occupant cannot open another Chrome tab, window, split, or address bar (Ctrl/Cmd+T/N/L/W/Tab, Shift+T, Alt+D, F6, F12, Ctrl+Shift+I/J/C, Ctrl+U, and page `window.open`). Gateway tab seats stay — one isolated ChatGPT target per member. Copy/paste (Ctrl/Cmd+C/V) still works. This is an in-page lock (CDP inject + `Page.navigate`), not a server ACL — the same ChatGPT cookies are still shared. The conversation list may still show other people's titles.
+
+When CDP is **off**, there is no per-member jail (one VNC desktop). If the administrator pastes a single project URL as the desk start URL, the kiosk can open there, but that is one project for whoever uses the desk.
+
+Page assist is not a separate switch: it is part of the per-account **multi-user / debug port** toggle (off by default). It drives chatgpt.com through DevTools selectors, so it can break when OpenAI redesigns the page; with the toggle off you click Share yourself — links still reach your clipboard — and no project onboarding or per-member jail happens.
 
 ## Configuration
 
@@ -141,7 +145,7 @@ One ChatGPT account is still one desktop container and one Chromium profile (`--
 - When multi-user is **on**, every occupant including the first gets their own `chatgpt.com` tab in the same Chromium — nobody is given the full desktop. The first user may attach to the existing kiosk ChatGPT target; later users get a background tab (`newWindow: false`), parked off-screen. The gateway streams **that tab only** (CDP `Page.startScreencast`) and injects pointer/keyboard with CDP `Input`. The member never sees the tab strip or another seat's target.
 - **断开** on the account card is per-seat: it drops that member's tab (or VNC) without killing the other tab or the container.
 - Cap: `TAB_SEATS_MAX` (default 3 tab seats; everyone is a tab when multi-user is on). An idle tab seat is closed after about 45 seconds without a presence beat.
-- ChatGPT's own sidebar may still list the other member's chats. Page assist still attaches to the member's tab when they first enter.
+- ChatGPT's own sidebar may still list the other member's chats. Other *projects* are hidden first; a navigation to another `/g/g-p-…/project` is bounced back. Page assist still attaches to the member's tab when they first enter and lands them on their project URL.
 - `--kiosk` is off so extra tabs can be created. Extra targets are background tabs parked off-screen; members see the page viewport, not browser chrome.
 
 A Cloud / CI VM cannot run the real desktop image. Unit tests cover seat assignment, target isolation, disconnect-one-tab, and the occupancy cap. Phoenix should confirm two members on one signed-in account each see only their tab.
