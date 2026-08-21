@@ -90,6 +90,43 @@ describe("concurrent member open", () => {
     assert.deepEqual(got, { targetId: "t-warm", reused: true });
   });
 
+  it("two concurrent /open allocations are tab seats with distinct targets, never VNC", async () => {
+    const seats = createSeatRegistry({ cap: 3 });
+    let n = 0;
+    const ada = user("1", "ada");
+    const bob = user("2", "bob");
+    const [one, two] = await Promise.all([
+      allocateTabSeatTarget({
+        deskId: "desk",
+        user: ada,
+        projectUrl: "https://chatgpt.com/g/g-p-aaa111-ada/project",
+        seats,
+        targetExists: async () => false,
+        findParked: async () => null,
+        createParked: async () => ({ targetId: `tab-${++n}` }),
+        reserveTarget: () => true,
+      }),
+      allocateTabSeatTarget({
+        deskId: "desk",
+        user: bob,
+        projectUrl: "https://chatgpt.com/g/g-p-bbb222-bob/project",
+        seats,
+        targetExists: async () => false,
+        findParked: async () => null,
+        createParked: async () => ({ targetId: `tab-${++n}` }),
+        reserveTarget: () => true,
+      }),
+    ]);
+    const a = seats.claim("desk", ada, { mode: "tab", targetId: one.targetId });
+    const b = seats.claim("desk", bob, { mode: "tab", targetId: two.targetId });
+    assert.equal(a.mode, "tab");
+    assert.equal(b.mode, "tab");
+    assert.notEqual(a.targetId, b.targetId);
+    assert.equal(a.targetId.startsWith("tab-"), true);
+    assert.equal(memberCdpMustBeTab(true, "member", a.mode), true);
+    assert.equal(memberCdpMustBeTab(true, "member", "vnc"), false);
+  });
+
   it("fails a hung debugger instead of hanging /open", async () => {
     assert.equal(OPEN_CDP_MS <= 4000, true);
     await assert.rejects(

@@ -16,6 +16,7 @@ import {
 } from "../lib/seats.mjs";
 import {
   cookiesIndicateChatGPTSession,
+  attachSeatTarget,
   createDeskBrowserPool,
   closeTarget,
   createParkedChatGPTTab,
@@ -29,6 +30,8 @@ import {
   pickUnclaimedChatGPTTarget,
   probeDeskSession,
   releaseReservedTarget,
+  reservedIdsForDesk,
+  reserveTarget,
   sessionFromProbe,
   targetIdFromJsonNew,
 } from "../lib/cdp.mjs";
@@ -706,6 +709,50 @@ describe("session cookies and input mapping", () => {
     assert.equal(creates, 2);
     releaseReservedTarget("race", first.targetId);
     releaseReservedTarget("race", second.targetId);
+  });
+
+  it("opens a dedicated CDP session per seat so two streams do not share one socket", async () => {
+    let connects = 0;
+    const fetchImpl = async (url) => {
+      if (String(url).includes("/json/version")) {
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    const connect = () => {
+      connects += 1;
+      const n = connects;
+      return {
+        ready: Promise.resolve(),
+        ws: { readyState: 1, addEventListener() {} },
+        async send(method, params) {
+          if (method === "Target.attachToTarget") return { sessionId: `s-${params.targetId}-${n}` };
+          if (method === "Target.detachFromTarget") return {};
+          if (method === "Target.getTargets") return { targetInfos: [] };
+          throw new Error(method);
+        },
+        close() {},
+      };
+    };
+    const pool = createDeskBrowserPool();
+    await pool.get("a", { fetchImpl, connect });
+    const afterControl = connects;
+    const ada = await attachSeatTarget("a", "t-ada", { fetchImpl, connect, pool });
+    const bob = await attachSeatTarget("a", "t-bob", { fetchImpl, connect, pool });
+    assert.equal(ada.dedicated, true);
+    assert.equal(bob.dedicated, true);
+    assert.notEqual(ada.sessionId, bob.sessionId);
+    assert.equal(connects, afterControl + 2);
+    await ada.release();
+    await bob.release();
+  });
+
+  it("does not re-offer a reserved parked target to another member", () => {
+    assert.equal(reserveTarget("desk-x", "t-ada"), true);
+    assert.deepEqual(reservedIdsForDesk("desk-x"), ["t-ada"]);
+    assert.equal(reserveTarget("desk-x", "t-ada"), false);
+    releaseReservedTarget("desk-x", "t-ada");
+    assert.deepEqual(reservedIdsForDesk("desk-x"), []);
   });
 
   it("does not close the last/only page target", async () => {

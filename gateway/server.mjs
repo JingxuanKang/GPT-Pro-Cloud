@@ -13,7 +13,7 @@ import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat, seatOpenFlags } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, parkSeatTarget, reserveTarget, targetExists, withDeadline } from "../lib/cdp.mjs";
+import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, parkSeatTarget, reservedIdsForDesk, reserveTarget, targetExists, withDeadline } from "../lib/cdp.mjs";
 import { allocateTabSeatTarget, memberCdpMustBeTab, OPEN_CDP_MS, OPEN_FAIL, OPEN_TAB_FAIL } from "../lib/tab-open.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, pickTargetForProject, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import {
@@ -130,7 +130,8 @@ async function findParkedProjectTarget(deskId, projectUrl, claimedTargetIds = []
   if (!projectUrl) return null;
   try {
     const pages = await withDeadline(listDeskTargets(deskId), 2000, "工作区还没准备好");
-    return pickTargetForProject(pages, { projectUrl, claimedTargetIds });
+    const skip = [...claimedTargetIds, ...reservedIdsForDesk(deskId)];
+    return pickTargetForProject(pages, { projectUrl, claimedTargetIds: skip });
   } catch {
     return null;
   }

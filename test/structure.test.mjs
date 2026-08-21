@@ -140,9 +140,12 @@ describe("standalone product", () => {
     assert.match(gw, /warmAllParkedMemberSeats/);
     assert.match(gw, /warmDeskMemberSeats/);
     assert.match(gw, /findParkedProjectTarget/);
+    const findParkedFn = gw.slice(gw.indexOf("async function findParkedProjectTarget"), gw.indexOf("async function ensureParkedMemberSeat"));
+    assert.match(findParkedFn, /reservedIdsForDesk/);
     assert.match(readFileSync(resolve(root, "package.json"), "utf8"), /tab-open\.test\.mjs/);
     assert.match(gw, /allocateTabSeatTarget/);
     assert.match(gw, /OPEN_CDP_MS/);
+    assert.match(gw, /reservedIdsForDesk/);
     const openStart = gw.indexOf("const open = url.pathname.match(/^\\/api\\/desks\\/([a-z0-9-]+)\\/open$/)");
     const openBlock = gw.slice(openStart, gw.indexOf("const paste = url.pathname.match"));
     assert.doesNotMatch(openBlock, /deskHasChatGPTSession/);
@@ -346,7 +349,13 @@ describe("standalone product", () => {
     assert.match(cdp, /probeDeskSession/);
     assert.match(cdp, /deskBrowserWs/);
     assert.match(cdp, /createDeskBrowserPool/);
+    assert.match(cdp, /connectDedicated/);
+    assert.match(cdp, /reservedIdsForDesk/);
     assert.match(cdp, /forgetDeskBrowser/);
+    const attachFn = cdp.slice(cdp.indexOf("export async function attachSeatTarget"), cdp.indexOf("export async function evaluateOnSession"));
+    assert.match(attachFn, /connectDedicated/);
+    assert.match(attachFn, /dedicated/);
+    assert.doesNotMatch(attachFn, /const cdp = await pool\.get/);
     assert.match(cdp, /Target.getTargets/);
     assert.match(cdp, /createTargetViaHttp/);
     assert.match(cdp, /json\/new/);
