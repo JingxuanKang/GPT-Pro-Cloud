@@ -21,7 +21,7 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const state = { me: null, desks: [], presence: {}, users: [], settings: {}, proxyPresets: [], view: "home", deskId: null, deskMode: "vnc", seatId: null, err: "", modal: false, manage: null, rename: null, create: false, assign: null, resetPw: null, selfPw: false, seatCap: 3, setup: false, boot: true };
+const state = { me: null, desks: [], presence: {}, users: [], settings: {}, proxyPresets: [], view: "home", deskId: null, deskMode: "vnc", seatId: null, entering: false, reused: false, err: "", modal: false, manage: null, rename: null, create: false, assign: null, resetPw: null, selfPw: false, seatCap: 3, setup: false, boot: true };
 
 function deskCdpOn(id) {
   return !!state.desks.find((d) => d.id === id)?.cdp;
@@ -559,6 +559,8 @@ function renderDesk() {
   const vs = people(state.deskId);
   const names = vs.length ? vs.map((v) => v.username).join("、") : "";
   const tab = state.deskMode === "tab";
+  const entering = !!state.entering && !state.reused;
+  const waitGone = !!state.reused;
   const src = `/vnc/index.html?autoconnect=1&path=websockify&resize=remote&reconnect=true&reconnect_delay=2000&clipboard_up=true&clipboard_down=true&clipboard_seamless=true`;
   const surface = !state.seatId
     ? ""
@@ -579,7 +581,12 @@ function renderDesk() {
       </div>
     </div>
     <div class="frame">
-      <div class="frame-wait" id="frame-wait">${MARK}</div>
+      <div class="frame-wait${waitGone ? " gone" : ""}" id="frame-wait">
+        <div class="frame-wait-inner">
+          ${MARK}
+          ${entering ? `<p class="frame-wait-copy">正在进入</p>` : ""}
+        </div>
+      </div>
       ${surface}
     </div>
   </div>`;
@@ -604,8 +611,12 @@ function render() {
   if (state.view === "desk") {
     if (state.deskId && !state.seatId && state.me && !state._opening) {
       state._opening = true;
+      state.entering = deskCdpOn(state.deskId) && state.me?.role !== "admin";
+      state.reused = false;
       openDesk(state.deskId)
         .catch((err) => {
+          state.entering = false;
+          state.reused = false;
           toast(err.message || "无法进入");
           setHash("/");
         })
@@ -660,6 +671,8 @@ function dropPresence() {
   api("/api/presence/leave", { method: "POST", body: {} }).catch(() => {});
   state.deskMode = "vnc";
   state.seatId = null;
+  state.entering = false;
+  state.reused = false;
 }
 
 function isShareLink(text) {
@@ -713,7 +726,12 @@ function bindSeatCast() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/seats/${state.seatId}`);
   seatWs = ws;
-  const hide = () => wait?.classList.add("gone");
+  const waitForFrame = !!state.entering && !state.reused;
+  const hide = () => {
+    wait?.classList.add("gone");
+    state.entering = false;
+  };
+  if (!waitForFrame) hide();
   let view = { width: canvas.clientWidth || 1280, height: canvas.clientHeight || 800 };
 
   const send = (obj) => {
@@ -735,7 +753,7 @@ function bindSeatCast() {
 
   ws.onopen = () => {
     sendSize();
-    setTimeout(hide, 400);
+    if (!waitForFrame) hide();
   };
   ws.onmessage = (ev) => {
     let msg;
@@ -1171,6 +1189,8 @@ async function openDesk(id) {
   const r = await api(`/api/desks/${id}/open`, { method: "POST" });
   state.deskMode = r.mode || "vnc";
   state.seatId = r.seat?.id || null;
+  state.entering = !!r.entering;
+  state.reused = !!r.reused;
   setHash(`/desk/${id}`);
 }
 
