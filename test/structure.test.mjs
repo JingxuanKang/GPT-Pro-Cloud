@@ -342,6 +342,10 @@ describe("standalone product", () => {
     const jail = readFileSync(resolve(root, "lib/project-jail.mjs"), "utf8");
     assert.match(jail, /bounceUrl/);
     assert.match(jail, /isAllowedJailUrl/);
+    assert.match(jail, /shouldEnforceJailReplace/);
+    assert.match(jail, /shouldApplyProjectHideMark/);
+    assert.match(jail, /projectRowForControl/);
+    assert.match(jail, /projectJailHideCss/);
     assert.match(jail, /shouldHideOtherProject/);
     assert.match(jail, /shouldBlockProjectClick/);
     assert.match(jail, /seatStartUrl/);
