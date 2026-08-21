@@ -11,7 +11,6 @@ import { CHATGPT_START } from "../lib/cdp.mjs";
 import { seatStartUrl } from "../lib/project-jail.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const LOCK_MSG = "多人分屏暂未开放";
 const PROJECT_HOME = "https://chatgpt.com/g/g-p-aaa111-ada/project";
 
 function cookieOf(res) {
@@ -53,73 +52,12 @@ function waitForLog(child, re, ms = 15000) {
   });
 }
 
-function seedUsersFile(file, extra = {}) {
-  writeFileSync(
-    file,
-    JSON.stringify({
-      users: [],
-      deskCdp: { a: true, b: true },
-      deskNames: { a: "Phoenix A" },
-      ...extra,
-    }),
-  );
-}
-
 function storedCdp(file, id = "a") {
   return !!JSON.parse(readFileSync(file, "utf8")).deskCdp?.[id];
 }
 
-describe("CDP lock — deskCdpOn ignores stored true", () => {
-  it("returns false for every desk when users.json still has deskCdp true", () => {
-    const dir = mkdtempSync(join(tmpdir(), "gpc-lock-store-"));
-    const file = join(dir, "users.json");
-    seedUsersFile(file);
-    const store = createUserStore({
-      file,
-      adminUser: "admin",
-      adminPassword: "admin-secret",
-      deskIds: ["a", "b"],
-    });
-    assert.equal(store.deskCdpOn("a"), false);
-    assert.equal(store.deskCdpOn("b"), false);
-    assert.equal(store.deskCdpOn("missing"), false);
-    assert.equal(store.assistOn("a"), false);
-    assert.equal(storedCdp(file, "a"), true);
-    assert.equal(storedCdp(file, "b"), true);
-  });
-});
-
-describe("CDP lock — setDeskCdp", () => {
-  it("rejects turning a desk on with the formal Chinese lock message", () => {
-    const dir = mkdtempSync(join(tmpdir(), "gpc-lock-set-"));
-    const store = createUserStore({
-      file: join(dir, "users.json"),
-      adminUser: "admin",
-      adminPassword: "admin-secret",
-      deskIds: ["a", "b"],
-    });
-    assert.throws(() => store.setDeskCdp("a", true), (err) => err.message === LOCK_MSG);
-    assert.equal(store.deskCdpOn("a"), false);
-  });
-
-  it("treats setDeskCdp(false) as a no-op and does not wipe stored flags", () => {
-    const dir = mkdtempSync(join(tmpdir(), "gpc-lock-off-"));
-    const file = join(dir, "users.json");
-    seedUsersFile(file);
-    const store = createUserStore({
-      file,
-      adminUser: "admin",
-      adminPassword: "admin-secret",
-      deskIds: ["a", "b"],
-    });
-    assert.equal(store.setDeskCdp("a", false), false);
-    assert.equal(store.deskCdpOn("a"), false);
-    assert.equal(storedCdp(file, "a"), true);
-  });
-});
-
-describe("CDP lock — exclusive VNC decision", () => {
-  it("sends the first occupant to exclusive VNC when the lock forces cdp off", () => {
+describe("CDP off — exclusive VNC decision", () => {
+  it("sends the first occupant to exclusive VNC when cdp is off", () => {
     const first = decideOpenMode({ occupants: [], userId: "1", cdp: false });
     assert.equal(first.mode, "vnc");
     assert.equal(first.attach, false);
@@ -140,23 +78,23 @@ describe("CDP lock — exclusive VNC decision", () => {
   });
 });
 
-describe("CDP lock — settings UI", () => {
-  it("shows only the closed notice and no working enable switch", () => {
+describe("CDP off — settings UI", () => {
+  it("shows a per-desk switch and reads the stored flag", () => {
     const ui = readFileSync(resolve(root, "gateway/web/app.js"), "utf8");
     const settingsStart = ui.indexOf("function renderSettings");
     const settingsBlock = ui.slice(settingsStart, ui.indexOf("const isMac", settingsStart));
     const panel = settingsBlock.slice(settingsBlock.indexOf("<b>多人分屏</b>"), settingsBlock.indexOf("<b>复制粘贴</b>"));
-    assert.match(panel, /多人分屏暂未开放/);
-    assert.doesNotMatch(panel, /data-cdp-toggle|checkbox|switch-row|cdp-rows|cdp-empty/);
-    assert.doesNotMatch(panel, /data-cdp-master|cdp-master/);
-    assert.doesNotMatch(ui, /data-cdp-toggle/);
+    assert.match(panel, /data-cdp-toggle/);
+    assert.match(panel, /class="cdp-rows"|cdp-empty/);
+    assert.doesNotMatch(panel, /多人分屏暂未开放/);
+    assert.match(ui, /data-cdp-toggle/);
     const deskCdpOnFn = ui.slice(ui.indexOf("function deskCdpOn"), ui.indexOf("function route"));
-    assert.match(deskCdpOnFn, /return false/);
-    assert.doesNotMatch(deskCdpOnFn, /state\.desks/);
+    assert.match(deskCdpOnFn, /state\.desks/);
+    assert.doesNotMatch(deskCdpOnFn, /return false/);
   });
 });
 
-describe("CDP lock — share / jail / onboard stay gated", () => {
+describe("CDP off — share / jail / onboard stay gated", () => {
   it("does not arm jail, kickOnboard, share, or page-assist unless cdp is on", () => {
     const gw = readFileSync(resolve(root, "gateway/server.mjs"), "utf8");
     const ui = readFileSync(resolve(root, "gateway/web/app.js"), "utf8");
@@ -164,19 +102,18 @@ describe("CDP lock — share / jail / onboard stay gated", () => {
     const openBlock = gw.slice(openStart, gw.indexOf("const paste = url.pathname.match"));
     assert.match(openBlock, /const cdp = users\.deskCdpOn\(id\)/);
     assert.equal([...openBlock.matchAll(/armSeatProjectJail\(/g)].length, 1);
-    assert.match(openBlock, /if \(cdp && projectUrl\) armSeatProjectJail/);
+    assert.match(openBlock, /if \(cdp && sess\.user\.role !== "admin" && projectUrl\) armSeatProjectJail/);
     assert.equal([...openBlock.matchAll(/kickOnboard\(/g)].length, 1);
-    assert.match(openBlock, /if \(cdp\) kickOnboard/);
-    assert.match(openBlock, /const projectUrl = cdp \? users\.projectUrlOn/);
+    assert.match(openBlock, /if \(cdp && sess\.user\.role !== "admin"\) kickOnboard/);
     assert.match(gw, /if \(!users\.deskCdpOn\(id\)\) return json\(res, 403/);
     assert.match(ui, /deskCdpOn\(state\.deskId\) \? `<button type="button" class="chrome-btn" id="share-chat"/);
-    assert.match(ui, /if \(deskCdpOn\(state\.deskId\)\) ensureWorkspace\(\)/);
+    assert.match(ui, /if \(deskCdpOn\(state\.deskId\) && state\.me\?\.role !== "admin" && state\.deskMode === "tab"\) ensureWorkspace\(\)/);
     const deskCdpOnFn = ui.slice(ui.indexOf("function deskCdpOn"), ui.indexOf("function route"));
-    assert.match(deskCdpOnFn, /return false/);
+    assert.match(deskCdpOnFn, /state\.desks/);
   });
 });
 
-describe("CDP lock — gateway with stored deskCdp=true", { concurrency: 1 }, () => {
+describe("CDP off — gateway with split-screen disabled", { concurrency: 1 }, () => {
   let child;
   let base;
   let adminCookie;
@@ -184,7 +121,7 @@ describe("CDP lock — gateway with stored deskCdp=true", { concurrency: 1 }, ()
   let adaCookie;
 
   before(async () => {
-    const dir = mkdtempSync(join(tmpdir(), "gpc-cdp-lock-suite-"));
+    const dir = mkdtempSync(join(tmpdir(), "gpc-cdp-off-suite-"));
     usersFile = join(dir, "users.json");
     const store = createUserStore({
       file: usersFile,
@@ -200,9 +137,6 @@ describe("CDP lock — gateway with stored deskCdp=true", { concurrency: 1 }, ()
       projectDesk: "a",
       projectUrl: PROJECT_HOME,
     });
-    const data = JSON.parse(readFileSync(usersFile, "utf8"));
-    data.deskCdp = { a: true, b: true };
-    writeFileSync(usersFile, JSON.stringify(data, null, 2));
     const port = 20000 + Math.floor(Math.random() * 2000);
     child = spawn(process.execPath, [join(root, "gateway/server.mjs")], {
       cwd: root,
@@ -236,49 +170,49 @@ describe("CDP lock — gateway with stored deskCdp=true", { concurrency: 1 }, ()
     if (child && !child.killed) child.kill("SIGTERM");
   });
 
-  it("lists every desk as cdp false while the stored flag stays true", async () => {
-    assert.equal(storedCdp(usersFile, "a"), true);
+  it("lists every desk as cdp false when the stored flag is off", async () => {
+    assert.equal(storedCdp(usersFile, "a"), false);
     const list = await req(base, "/api/desks", { cookie: adminCookie });
     assert.equal(list.status, 200);
     assert.equal(list.data.desks.find((d) => d.id === "a").cdp, false);
     assert.equal(list.data.desks.find((d) => d.id === "b").cdp, false);
-    assert.equal(storedCdp(usersFile, "a"), true);
   });
 
-  it("rejects PATCH cdp true with 4xx and the formal Chinese lock message", async () => {
+  it("honors a stored deskCdp=true flag after reload", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gpc-cdp-stored-"));
+    const file = join(dir, "users.json");
+    writeFileSync(file, JSON.stringify({ users: [], deskCdp: { a: true } }));
+    const store = createUserStore({
+      file,
+      adminUser: "admin",
+      adminPassword: "admin-secret",
+      deskIds: ["a", "b"],
+    });
+    assert.equal(store.deskCdpOn("a"), true);
+    assert.equal(store.deskCdpOn("b"), false);
+  });
+
+  it("runs the enable job on PATCH cdp true instead of a hard lock", async () => {
     const saved = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: true } });
-    assert.ok(saved.status >= 400 && saved.status < 500);
-    assert.equal(saved.data.error, LOCK_MSG);
-    assert.equal(storedCdp(usersFile, "a"), true);
+    assert.ok(saved.status === 400 || saved.status === 403 || saved.status === 409 || saved.status === 502);
+    assert.doesNotMatch(saved.data.error || "", /暂未开放/);
+    assert.match(saved.data.error || "", /断开|占用|登录|不可达|登录状态|容器/);
+    assert.equal(storedCdp(usersFile, "a"), false);
     const list = await req(base, "/api/desks", { cookie: adminCookie });
     assert.equal(list.data.desks.find((d) => d.id === "a").cdp, false);
   });
 
-  it("accepts PATCH cdp false as a no-op without wiping stored flags", async () => {
+  it("accepts PATCH cdp false while the switch is already off", async () => {
     const off = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: false } });
     assert.equal(off.status, 200);
     assert.equal(off.data.cdp, false);
-    assert.equal(storedCdp(usersFile, "a"), true);
-  });
-
-  it("rejects a mixed rename + enable PATCH without renaming the desk", async () => {
-    const before = await req(base, "/api/desks", { cookie: adminCookie });
-    assert.equal(before.data.desks.find((d) => d.id === "a").name, "Phoenix A");
-    const mixed = await req(base, "/api/admin/desks/a", {
-      method: "PATCH",
-      cookie: adminCookie,
-      body: { name: "Should Not Stick", cdp: true },
-    });
-    assert.ok(mixed.status >= 400 && mixed.status < 500);
-    assert.equal(mixed.data.error, LOCK_MSG);
-    const after = await req(base, "/api/desks", { cookie: adminCookie });
-    assert.equal(after.data.desks.find((d) => d.id === "a").name, "Phoenix A");
+    assert.equal(storedCdp(usersFile, "a"), false);
   });
 
   it("rejects a member PATCH that tries to enable CDP", async () => {
     const saved = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adaCookie, body: { cdp: true } });
     assert.equal(saved.status, 403);
-    assert.equal(storedCdp(usersFile, "a"), true);
+    assert.equal(storedCdp(usersFile, "a"), false);
   });
 
   it("opens the first occupant on exclusive VNC, not a tab, even with a stored project URL", async () => {
@@ -300,7 +234,7 @@ describe("CDP lock — gateway with stored deskCdp=true", { concurrency: 1 }, ()
     assert.equal(again.data.seat?.mode, "vnc");
   });
 
-  it("rejects share and onboard page-assist while the lock is on", async () => {
+  it("rejects share and onboard page-assist while split-screen is off", async () => {
     const share = await req(base, "/api/desks/a/share", { method: "POST", cookie: adaCookie });
     assert.equal(share.status, 403);
     assert.match(share.data.error || "", /调试口|多人/);

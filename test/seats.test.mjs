@@ -169,6 +169,26 @@ describe("seat assignment", () => {
     assert.equal(reg.tabCount("a"), 1);
   });
 
+  it("gives the admin exclusive VNC even when CDP is on", () => {
+    const mode = decideOpenMode({ occupants: [{ userId: "1" }], userId: "admin", cdp: true, role: "admin" });
+    assert.equal(mode.mode, "vnc");
+    const reg = createSeatRegistry({ cap: 3 });
+    const admin = { id: "0", username: "boss", role: "admin" };
+    const decision = reg.decide("a", admin, { cdp: true });
+    assert.equal(decision.mode, "vnc");
+  });
+
+  it("does not reattach a leftover tab when CDP is off", () => {
+    const mode = decideOpenMode({
+      occupants: [],
+      userId: "1",
+      cdp: false,
+      existing: { id: "s1", mode: "tab", userId: "1" },
+    });
+    assert.equal(mode.mode, "vnc");
+    assert.equal(mode.attach, false);
+  });
+
   it("rejects a second occupant when CDP / 多人分屏 is off", () => {
     const reg = createSeatRegistry({ cap: 3 });
     reg.claim("a", user("1", "ada"), { mode: "vnc" });

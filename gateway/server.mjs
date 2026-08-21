@@ -13,8 +13,19 @@ import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, evaluateOnTarget, forgetDeskBrowser, targetExists } from "../lib/cdp.mjs";
+import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, targetExists } from "../lib/cdp.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
+import {
+  DESK_UNREACHABLE,
+  WORKSPACE_NOT_READY,
+  acceptOnboardResult,
+  assignDesksWithProjects,
+  exclusiveOccupied,
+  lockMemberToStoredProject,
+  memberOpenDecision,
+  renameMemberWithProjects,
+  runEnableJob,
+} from "../lib/split-screen.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
 import { WebSocketServer } from "ws";
@@ -107,57 +118,90 @@ async function runOnboard(id, name, { create = true, targetId } = {}) {
   for (let i = 0; i < 3; i++) {
     last = await withDeskCdp(id, () => evaluateInDesk(id, projectOnboardScript(name, { create }), 28000, { targetId }));
     if (last?.ok) return last;
-    if (!create && last?.error === "找不到项目") {
-      last = await withDeskCdp(id, () =>
-        evaluateInDesk(id, projectOnboardScript(name, { create: true }), 28000, { targetId }),
-      );
-      if (last?.ok) return last;
-    }
     await sleep(1500);
   }
   return last;
 }
 
+/** Job-only: parked tab, require project-only memory, persist URL. Never used on member open. */
+async function createMemberProject(deskId, user, { skipIfUrl = true, name } = {}) {
+  const projectName = String(name || user?.username || "").trim();
+  const uid = user?.id;
+  if (!projectName || !uid) return { ok: false, error: "没有用户名" };
+  if (skipIfUrl) {
+    const existing = users.projectUrlOn(uid, deskId);
+    if (existing) return { ok: true, url: existing, skipped: true, memory: "project-only" };
+  }
+  const claimedTargetIds = seats.list(deskId).map((s) => s.targetId).filter(Boolean);
+  let created;
+  try {
+    created = await createParkedChatGPTTab(deskId, { claimedTargetIds });
+  } catch (e) {
+    return { ok: false, error: e.message || "无法创建分屏席位，请稍后再试" };
+  }
+  try {
+    const r = await runOnboard(deskId, projectName, { create: true, targetId: created.targetId });
+    let accepted = acceptOnboardResult(r);
+    if (!accepted.ok && r?.ok) {
+      const resolved = await resolveOnboardUrl(deskId, r, created.targetId);
+      accepted = acceptOnboardResult({ ...r, url: resolved || r.url });
+    }
+    if (!accepted.ok) return accepted;
+    await rememberProjectUrl(uid, deskId, projectName, accepted.url);
+    return { ok: true, url: accepted.url, action: accepted.action, memory: "project-only" };
+  } finally {
+    await closeTarget(deskId, created.targetId).catch(() => {});
+  }
+}
+
 /**
- * Persist the named project's URL even when projectReady is already true,
- * navigate the seat there, and arm the jail. Do not skip because readyOn.
+ * Member path only: navigate to the stored project URL and arm the jail.
+ * Do not create a ChatGPT project here.
  */
 async function lockSeatToProject(id, user, targetId) {
-  const name = String(user.username || "").trim();
-  const uid = user?.id;
-  if (!name || !uid) return { ok: false, error: "没有用户名" };
-  await waitForDesk(id, 45000, { targetId });
-  let home = "";
-  let action = "opened";
-  for (let i = 0; i < 3; i++) {
-    home = users.projectUrlOn(uid, id);
-    if (!home) {
-      const links = await withDeskCdp(id, () => listSeatProjectLinks(id, targetId));
-      home = pickNamedProjectHref(name, links);
-    }
-    if (!home) {
-      const r = await runOnboard(id, name, { create: true, targetId });
-      if (r?.ok) {
-        action = r.action || "opened";
-        home = await resolveOnboardUrl(id, r, targetId);
-        if (!home) {
-          const links = await withDeskCdp(id, () => listSeatProjectLinks(id, targetId));
-          home = pickNamedProjectHref(name, links);
-        }
-      }
-    }
-    if (home) break;
-    await sleep(1500);
-  }
-  if (!home) return { ok: false, error: "找不到项目" };
-  home = await rememberProjectUrl(uid, id, name, home);
-  if (!home) return { ok: false, error: "找不到项目" };
-  const seat = seats.ofUser(id, uid);
+  if (user?.role === "admin") return { ok: true, action: "admin" };
+  const locked = lockMemberToStoredProject({ user, deskId: id, users });
+  if (!locked.ok) return locked;
+  const home = locked.url;
+  const seat = seats.ofUser(id, user.id);
   if (targetId) {
     await withDeskCdp(id, () => navigateSeatToUrl(id, targetId, home)).catch(() => {});
   }
   if (seat) await armSeatProjectJail(seat, home);
-  return { ok: true, url: home, action };
+  return { ok: true, url: home, action: "opened", created: false };
+}
+
+async function applyCdpPort(deskId, on) {
+  await applyDeskCdpLive(deskId, on);
+  forgetDeskBrowser(deskId);
+}
+
+async function enableDeskSplitScreen(deskId) {
+  return runEnableJob({
+    deskId,
+    users,
+    occupied: exclusiveOccupied({ seats, presence, deskId }),
+    alreadyOn: users.deskCdpOn(deskId),
+    applyCdp: (on) => applyCdpPort(deskId, on),
+    persistCdp: (on) => users.setDeskCdp(deskId, on),
+    hasSession: () => deskHasChatGPTSession(deskId),
+    createProject: (id, member) => createMemberProject(id, member),
+  });
+}
+
+async function disableDeskSplitScreen(deskId) {
+  const parked = seats.list(deskId).filter((s) => s.mode === "tab");
+  for (const seat of parked) {
+    seats.release(seat.id);
+    await closeSeatTab(seat).catch(() => {});
+  }
+  users.setDeskCdp(deskId, false);
+  try {
+    await applyCdpPort(deskId, false);
+  } catch {
+    return { ok: false, status: 502, error: DESK_UNREACHABLE, cdp: false };
+  }
+  return { ok: true, cdp: false };
 }
 
 function kickOnboard(id, user, targetId) {
@@ -405,7 +449,6 @@ async function handleApi(req, res, url, sess) {
     if (!registry.has(rename[1])) return json(res, 404, { error: "账号不存在" });
     try {
       const body = await readBody(req);
-      if (body && "cdp" in body && body.cdp) return json(res, 400, { error: "多人分屏暂未开放" });
       const out = { ok: true };
       if ("name" in body) out.name = users.renameDesk(rename[1], body.name) || registry.get(rename[1]).name;
       if ("proxy" in body) {
@@ -417,7 +460,18 @@ async function handleApi(req, res, url, sess) {
         }
         out.proxy = proxy;
       }
-      if ("cdp" in body) out.cdp = users.setDeskCdp(rename[1], false);
+      if ("cdp" in body) {
+        const want = !!body.cdp;
+        if (!want) {
+          const off = await disableDeskSplitScreen(rename[1]);
+          if (!off.ok) return json(res, off.status || 502, { error: off.error });
+          out.cdp = false;
+        } else {
+          const job = await enableDeskSplitScreen(rename[1]);
+          if (!job.ok) return json(res, job.status || 400, { error: job.error, cdp: false });
+          out.cdp = true;
+        }
+      }
       return json(res, 200, out);
     } catch (e) {
       return json(res, 400, { error: e.message });
@@ -472,6 +526,22 @@ async function handleApi(req, res, url, sess) {
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
     const cdp = users.deskCdpOn(id);
     const extraOccupants = presence.list(id).map((v) => ({ userId: v.id }));
+    const storedUrl = cdp && sess.user.role !== "admin" ? users.projectUrlOn(sess.user.id, id) : "";
+    if (cdp && sess.user.role !== "admin") {
+      let hasSession = null;
+      try {
+        hasSession = await deskHasChatGPTSession(id);
+      } catch {
+        hasSession = null;
+      }
+      const gate = memberOpenDecision({
+        cdp,
+        role: sess.user.role,
+        projectUrl: storedUrl,
+        hasSession,
+      });
+      if (!gate.ok) return json(res, gate.status || 409, { error: gate.error, code: gate.code });
+    }
     let decision;
     try {
       decision = seats.decide(id, sess.user, { cdp, extraOccupants });
@@ -479,8 +549,8 @@ async function handleApi(req, res, url, sess) {
       return json(res, e.status || 409, { error: e.message, cap: seats.cap, code: e.code });
     }
     const claimedTargetIds = seats.list(id).map((s) => s.targetId).filter(Boolean);
-    const projectUrl = cdp ? users.projectUrlOn(sess.user.id, id) : "";
-    const startUrl = seatStartUrl({ cdp, projectUrl });
+    const projectUrl = sess.user.role === "admin" ? "" : storedUrl;
+    const startUrl = seatStartUrl({ cdp: cdp && sess.user.role !== "admin", projectUrl });
     let seat;
     if (decision.attach) {
       seat = decision.seat || seats.ofUser(id, sess.user.id);
@@ -518,8 +588,8 @@ async function handleApi(req, res, url, sess) {
     }
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
-    if (cdp && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
-    if (cdp) kickOnboard(id, sess.user, seat?.targetId);
+    if (cdp && sess.user.role !== "admin" && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
+    if (cdp && sess.user.role !== "admin") kickOnboard(id, sess.user, seat?.targetId);
     return json(res, 200, { ok: true, id, mode: seat.mode, seat: publicSeat(seat), cap: seats.cap });
   }
   const paste = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/paste$/);
@@ -645,13 +715,14 @@ async function handleApi(req, res, url, sess) {
     const id = onboard[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
     if (!users.deskCdpOn(id)) return json(res, 403, { error: "这个号未开多人分屏，页面协助需要开启调试口" });
+    if (sess.user.role === "admin") return json(res, 200, { ok: true, name: sess.user.username, action: "admin", created: false, url: "" });
     const name = String(sess.user.username || "").trim();
     if (!name) return json(res, 400, { error: "没有用户名" });
     try {
       const tab = seats.ofUser(id, sess.user.id);
       const r = await lockSeatToProject(id, sess.user, tab?.targetId);
-      if (!r?.ok) return json(res, 400, { error: r?.error || "工作区还没准备好" });
-      return json(res, 200, { ok: true, name, action: r.action || "opened", created: r.action === "created", url: r.url || "" });
+      if (!r?.ok) return json(res, 409, { error: r?.error || WORKSPACE_NOT_READY });
+      return json(res, 200, { ok: true, name, action: r.action || "opened", created: false, url: r.url || "" });
     } catch (e) {
       const raw = e.message || "";
       const error = /chromium|ChatGPT 页面|无法连接|未就绪/i.test(raw) ? "工作区还没准备好" : raw || "工作区还没准备好";
@@ -666,7 +737,19 @@ async function handleApi(req, res, url, sess) {
     if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
     try {
       const body = await readBody(req);
-      return json(res, 200, { user: users.create(body) });
+      const requested = Array.isArray(body.desks) ? body.desks : [];
+      const offDesks = requested.filter((d) => !users.deskCdpOn(d));
+      const user = users.create({ ...body, desks: offDesks });
+      if (!requested.some((d) => users.deskCdpOn(d))) return json(res, 200, { user });
+      const assigned = await assignDesksWithProjects({
+        user,
+        nextDesks: requested,
+        users,
+        hasSession: (deskId) => deskHasChatGPTSession(deskId),
+        createProject: (deskId, member) => createMemberProject(deskId, member),
+      });
+      if (!assigned.ok) return json(res, assigned.status || 400, { error: assigned.error, user: assigned.user });
+      return json(res, 200, { user: assigned.user });
     } catch (e) {
       return json(res, 400, { error: e.message });
     }
@@ -686,11 +769,32 @@ async function handleApi(req, res, url, sess) {
     if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
     try {
       const body = await readBody(req);
+      const current = users.get(one[1]);
+      if (!current) throw new Error("用户不存在");
+      if (body.username && String(body.username).trim() !== current.username) {
+        const renamed = await renameMemberWithProjects({
+          user: current,
+          username: body.username,
+          users,
+          hasSession: (deskId) => deskHasChatGPTSession(deskId),
+          createProject: (deskId, member, opts) => createMemberProject(deskId, member, opts),
+        });
+        if (!renamed.ok) return json(res, renamed.status || 400, { error: renamed.error });
+      }
+      if (Array.isArray(body.desks)) {
+        const assigned = await assignDesksWithProjects({
+          user: users.get(one[1]),
+          nextDesks: body.desks,
+          users,
+          hasSession: (deskId) => deskHasChatGPTSession(deskId),
+          createProject: (deskId, member) => createMemberProject(deskId, member),
+        });
+        if (!assigned.ok) return json(res, assigned.status || 400, { error: assigned.error, user: assigned.user });
+      }
       const patch = {};
-      if (Array.isArray(body.desks)) patch.desks = body.desks;
       if (body.password) patch.password = String(body.password);
       if (typeof body.disabled === "boolean") patch.disabled = body.disabled;
-      const user = users.update(one[1], patch);
+      const user = Object.keys(patch).length ? users.update(one[1], patch) : users.get(one[1]);
       if (body.password || body.disabled === true) sessions.deleteByUser(one[1]);
       if (body.disabled === true) {
         presence.leaveAll(one[1]);
