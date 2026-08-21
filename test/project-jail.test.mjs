@@ -12,7 +12,10 @@ import {
   projectJailHideCss,
   projectJailProbeExpression,
   projectRowForControl,
+  findChatSidebarRoot,
+  sidebarColumnForControl,
   shouldApplyProjectHideMark,
+  shouldApplySidebarHideMark,
   shouldEnforceJailReplace,
   shouldReuseSeatJail,
   isChatGPTProjectPath,
@@ -186,6 +189,42 @@ describe("sidebar hide and click block", () => {
     assert.equal(projectJailHideCss(""), "");
   });
 
+  it("hides the entire left sidebar only when a jail home is set", () => {
+    const css = projectJailHideCss(ADA);
+    assert.match(css, /data-gpc-hidden-sidebar/);
+    assert.match(css, /#stage-slideover-sidebar/);
+    assert.match(css, /left-sidebar|screen-sidebar|Chat history/);
+    assert.doesNotMatch(css, /New chat in/);
+    assert.equal(projectJailHideCss(""), "");
+    assert.equal(projectJailHideCss("https://chatgpt.com/"), "");
+  });
+
+  it("marks the sidebar column from the close control and ignores the main workspace", () => {
+    assert.equal(shouldApplySidebarHideMark(null), false);
+    assert.equal(shouldApplySidebarHideMark({ getAttribute: () => "1" }), false);
+    assert.equal(shouldApplySidebarHideMark({ getAttribute: () => "" }), true);
+    assert.equal(findChatSidebarRoot(null), null);
+    const nav = {
+      matches: (sel) => String(sel).includes("nav"),
+      closest: (sel) => (String(sel).includes("nav") ? nav : null),
+      parentElement: null,
+      textContent: "New chat Projects Chats test1 test2",
+    };
+    const btn = { closest: (sel) => (String(sel).includes("nav") ? nav : null), parentElement: nav };
+    const doc = {
+      querySelector: (sel) => (String(sel).includes("Close sidebar") ? btn : null),
+      querySelectorAll: () => [nav],
+    };
+    assert.equal(findChatSidebarRoot(doc), nav);
+    assert.equal(sidebarColumnForControl(btn), nav);
+    const main = {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      textContent: "New chat in ada",
+    };
+    assert.equal(findChatSidebarRoot(main), null);
+  });
+
   it("blocks clicks to another /g/g-p- path and allows own project and login", () => {
     assert.equal(shouldBlockProjectClick({ href: BOB, home: ADA }), true);
     assert.equal(shouldBlockProjectClick({ href: BOB_CHAT, home: ADA }), true);
@@ -247,6 +286,10 @@ describe("injected jail script", () => {
     const src = projectJailScript(ADA);
     assert.match(src, /gpc-project-jail-css/);
     assert.match(src, /data-gpc-project-jail/);
+    assert.match(src, /data-gpc-hidden-sidebar/);
+    assert.match(src, /hideSidebar/);
+    assert.match(src, /Close sidebar/);
+    assert.match(src, /findChatSidebarRoot/);
     assert.match(src, /isOther\(location\.href\)/);
     assert.match(src, /childList:\s*true/);
     assert.doesNotMatch(src, /attributeFilter/);

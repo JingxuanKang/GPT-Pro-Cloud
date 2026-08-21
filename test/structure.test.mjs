@@ -369,6 +369,8 @@ describe("standalone product", () => {
     assert.match(jail, /shouldEnforceJailReplace/);
     assert.match(jail, /shouldApplyProjectHideMark/);
     assert.match(jail, /projectRowForControl/);
+    assert.match(jail, /findChatSidebarRoot/);
+    assert.match(jail, /data-gpc-hidden-sidebar/);
     assert.match(jail, /projectJailHideCss/);
     assert.match(jail, /projectJailProbeExpression/);
     assert.match(jail, /applyJailCssViaCdp/);
