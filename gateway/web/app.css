@@ -489,8 +489,8 @@ button.chip:hover { border-color: var(--ink); color: var(--ink); background: var
   justify-content: space-between;
   gap: 20px;
   padding: 18px 20px;
-  cursor: pointer;
 }
+label.switch-row { cursor: pointer; }
 .switch-row b { display: block; font-size: 14.5px; font-weight: 600; }
 .switch-row em {
   display: block;
@@ -527,33 +527,13 @@ button.chip:hover { border-color: var(--ink); color: var(--ink); background: var
 .switch-row input:checked { background: var(--green); }
 .switch-row input:checked::after { transform: translateX(17px); }
 .switch-row input:disabled { opacity: 0.45; }
-.assist-note {
-  padding: 0 20px 18px;
-  border-top: 1px solid var(--hairline);
-}
-.assist-note > b {
-  display: block;
-  margin-top: 14px;
-  font-size: 13px;
-  font-weight: 600;
-}
-.assist-note p {
-  margin: 8px 0 0;
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.assist-note p b { color: var(--ink); font-weight: 600; }
-.cdp-rows .switch-row { border-top: 1px solid var(--hairline); }
 .cdp-empty {
-  margin: 0;
-  padding: 16px 20px 18px;
-  border-top: 1px solid var(--hairline);
+  padding: 12px 20px 18px;
   color: var(--mute);
   font-size: 13px;
-  line-height: 1.5;
 }
-.cdp-empty a { color: var(--ink); font-weight: 500; }
+.cdp-empty a { color: var(--ink); font-weight: 550; }
+.cdp-rows .switch-row { border-top: 1px solid var(--hairline); padding-top: 14px; padding-bottom: 14px; }
 
 .panel-head { padding: 18px 20px 4px; }
 .panel-head b { display: block; font-size: 14.5px; font-weight: 600; }
