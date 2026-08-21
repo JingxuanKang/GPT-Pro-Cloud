@@ -15,9 +15,11 @@ import {
 import {
   cookiesIndicateChatGPTSession,
   createDeskBrowserPool,
+  closeTarget,
   createParkedChatGPTTab,
   deskHasChatGPTSession,
   deskJsonNewUrl,
+  isLastPageTarget,
   PARKED_WINDOW_X,
   pickUnclaimedChatGPTTarget,
   probeDeskSession,
@@ -477,7 +479,7 @@ describe("session cookies and input mapping", () => {
     assert.equal(versionHits, 1);
   });
 
-  it("creates a background tab, not a new visible window", async () => {
+  it("creates a new parked window, not a tab on the last app window", async () => {
     const creates = [];
     const fetchImpl = async (url) => {
       if (String(url).includes("/json/version")) {
@@ -489,10 +491,12 @@ describe("session cookies and input mapping", () => {
       ready: Promise.resolve(),
       ws: { readyState: 1, addEventListener() {} },
       async send(method, params) {
-        if (method === "Target.getTargets") return { targetInfos: [] };
+        if (method === "Target.getTargets") {
+          return { targetInfos: [{ targetId: "t-app", type: "page", url: "https://chatgpt.com/" }] };
+        }
         if (method === "Target.createTarget") {
           creates.push(params);
-          return { targetId: "t-bg" };
+          return { targetId: "t-seat" };
         }
         if (method === "Browser.getWindowForTarget") return { windowId: 1 };
         if (method === "Browser.setWindowBounds") return {};
@@ -501,14 +505,16 @@ describe("session cookies and input mapping", () => {
       close() {},
     });
     const created = await createParkedChatGPTTab("a", { fetchImpl, connect, pool: createDeskBrowserPool() });
-    assert.equal(created.targetId, "t-bg");
+    assert.equal(created.targetId, "t-seat");
+    assert.equal(created.adopted, undefined);
     assert.equal(creates.length, 1);
-    assert.equal(creates[0].newWindow, false);
+    assert.equal(creates[0].newWindow, true);
+    assert.notEqual(creates[0].newWindow, false);
     assert.equal(creates[0].background, true);
-    releaseReservedTarget("a", "t-bg");
+    releaseReservedTarget("a", "t-seat");
   });
 
-  it("adopts an existing unclaimed ChatGPT target instead of opening a window", async () => {
+  it("does not adopt the last/primary ChatGPT page", async () => {
     let creates = 0;
     const fetchImpl = async (url) => {
       if (String(url).includes("/json/version")) {
@@ -519,17 +525,13 @@ describe("session cookies and input mapping", () => {
     const connect = () => ({
       ready: Promise.resolve(),
       ws: { readyState: 1, addEventListener() {} },
-      async send(method) {
+      async send(method, params) {
         if (method === "Target.getTargets") {
-          return {
-            targetInfos: [
-              { targetId: "t-kiosk", type: "page", url: "https://chatgpt.com/" },
-              { targetId: "t-other", type: "page", url: "https://example.com/" },
-            ],
-          };
+          return { targetInfos: [{ targetId: "t-kiosk", type: "page", url: "https://chatgpt.com/" }] };
         }
         if (method === "Target.createTarget") {
           creates += 1;
+          assert.equal(params.newWindow, true);
           return { targetId: "t-new" };
         }
         if (method === "Browser.getWindowForTarget") return { windowId: 9 };
@@ -539,10 +541,11 @@ describe("session cookies and input mapping", () => {
       close() {},
     });
     const created = await createParkedChatGPTTab("a", { fetchImpl, connect, pool: createDeskBrowserPool() });
-    assert.equal(created.targetId, "t-kiosk");
-    assert.equal(created.adopted, true);
-    assert.equal(creates, 0);
-    releaseReservedTarget("a", "t-kiosk");
+    assert.equal(created.targetId, "t-new");
+    assert.notEqual(created.targetId, "t-kiosk");
+    assert.equal(created.adopted, undefined);
+    assert.equal(creates, 1);
+    releaseReservedTarget("a", "t-new");
   });
 
   it("does not adopt a ChatGPT target another seat already owns", async () => {
@@ -559,7 +562,10 @@ describe("session cookies and input mapping", () => {
         if (method === "Target.getTargets") {
           return { targetInfos: [{ targetId: "t-ada", type: "page", url: "https://chatgpt.com/" }] };
         }
-        if (method === "Target.createTarget") return { targetId: "t-bob" };
+        if (method === "Target.createTarget") {
+          assert.equal(params.newWindow, true);
+          return { targetId: "t-bob" };
+        }
         if (method === "Browser.getWindowForTarget") return { windowId: 1 };
         if (method === "Browser.setWindowBounds") return {};
         throw new Error(`${method} ${JSON.stringify(params || {})}`);
@@ -619,9 +625,73 @@ describe("session cookies and input mapping", () => {
     ]);
     const ids = new Set([first.targetId, second.targetId]);
     assert.equal(ids.size, 2);
-    assert.equal(ids.has("t-kiosk"), true);
+    assert.equal(ids.has("t-kiosk"), false);
+    assert.equal(creates, 2);
     releaseReservedTarget("race", first.targetId);
     releaseReservedTarget("race", second.targetId);
+  });
+
+  it("does not close the last/only page target", async () => {
+    assert.equal(isLastPageTarget([{ id: "t-app", type: "page" }], "t-app"), true);
+    assert.equal(isLastPageTarget([{ id: "t-app", type: "page" }, { id: "t-seat", type: "page" }], "t-seat"), false);
+    const closed = [];
+    const fetchImpl = async (url) => {
+      if (String(url).includes("/json/version")) {
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    const connect = () => ({
+      ready: Promise.resolve(),
+      ws: { readyState: 1, addEventListener() {} },
+      async send(method, params) {
+        if (method === "Target.getTargets") {
+          return { targetInfos: [{ targetId: "t-app", type: "page", url: "https://chatgpt.com/" }] };
+        }
+        if (method === "Target.closeTarget") {
+          closed.push(params.targetId);
+          return { success: true };
+        }
+        throw new Error(method);
+      },
+      close() {},
+    });
+    const ok = await closeTarget("a", "t-app", { fetchImpl, connect, pool: createDeskBrowserPool() });
+    assert.equal(ok, false);
+    assert.deepEqual(closed, []);
+  });
+
+  it("closes an extra parked window when another page remains", async () => {
+    const closed = [];
+    const fetchImpl = async (url) => {
+      if (String(url).includes("/json/version")) {
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    const connect = () => ({
+      ready: Promise.resolve(),
+      ws: { readyState: 1, addEventListener() {} },
+      async send(method, params) {
+        if (method === "Target.getTargets") {
+          return {
+            targetInfos: [
+              { targetId: "t-app", type: "page", url: "https://chatgpt.com/" },
+              { targetId: "t-seat", type: "page", url: "https://chatgpt.com/" },
+            ],
+          };
+        }
+        if (method === "Target.closeTarget") {
+          closed.push(params.targetId);
+          return { success: true };
+        }
+        throw new Error(method);
+      },
+      close() {},
+    });
+    const ok = await closeTarget("a", "t-seat", { fetchImpl, connect, pool: createDeskBrowserPool() });
+    assert.equal(ok, true);
+    assert.deepEqual(closed, ["t-seat"]);
   });
 
   it("maps pointer and key events into CDP Input params", () => {

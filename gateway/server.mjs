@@ -151,6 +151,7 @@ async function createMemberProject(deskId, user, { skipIfUrl = true, name } = {}
     await rememberProjectUrl(uid, deskId, projectName, accepted.url);
     return { ok: true, url: accepted.url, action: accepted.action, memory: "project-only" };
   } finally {
+    // closeTarget refuses the last/primary page so onboard cannot kill Chromium.
     await closeTarget(deskId, created.targetId).catch(() => {});
   }
 }

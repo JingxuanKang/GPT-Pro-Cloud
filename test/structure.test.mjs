@@ -62,7 +62,11 @@ describe("standalone product", () => {
   it("desktop opens ChatGPT and honors rewritten proxy", () => {
     const start = readFileSync(resolve(root, "docker/autostart"), "utf8");
     const init = readFileSync(resolve(root, "docker/proxy-init.sh"), "utf8");
-    assert.match(start, /--app="\$\{START_URL\}"/);
+    assert.match(start, /WINDOW_ARG="--app=\$\{START_URL\}"/);
+    assert.match(start, /WINDOW_ARG="\$\{START_URL\}"/);
+    assert.match(start, /window=normal/);
+    assert.match(start, /code=\$\?/);
+    assert.match(start, /code=\$\{code\}/);
     const launch = start.slice(start.indexOf("/usr/bin/chromium"));
     assert.doesNotMatch(launch, /--kiosk/);
     assert.match(start, /No --kiosk/);
@@ -120,6 +124,7 @@ describe("standalone product", () => {
     assert.match(gw, /waitForDebugger/);
     assert.match(gw, /waitForDesk\(id, 45_000\)/);
     assert.match(gw, /createMemberProject/);
+    assert.match(gw, /closeTarget refuses the last\/primary page/);
     assert.match(gw, /lockMemberToStoredProject/);
     assert.match(gw, /该账号尚未登录 ChatGPT/);
     assert.match(gw, /工作区未就绪/);
@@ -277,6 +282,7 @@ describe("standalone product", () => {
     assert.match(clipd, /CHROMIUM_KILL_PATTERNS/);
     assert.match(clipd, /\/usr\/lib\/chromium\/chromium/);
     assert.match(clipd, /user-data-dir=\/config\/chromium/);
+    assert.match(clipd, /\["pkill", "-f", "--", pat\]/);
     assert.doesNotMatch(clipd, /pkill.*\/usr\/bin\/chromium/);
     const chrome = readFileSync(resolve(root, "lib/chrome.mjs"), "utf8");
     assert.match(chrome, /waitForDesk/);
@@ -293,10 +299,11 @@ describe("standalone product", () => {
     assert.match(cdp, /Target.getTargets/);
     assert.match(cdp, /createTargetViaHttp/);
     assert.match(cdp, /json\/new/);
-    assert.match(cdp, /newWindow: false/);
+    assert.match(cdp, /newWindow: true/);
     assert.match(cdp, /background: true/);
     assert.match(cdp, /pickUnclaimedChatGPTTarget/);
-    assert.doesNotMatch(cdp, /newWindow: true/);
+    assert.match(cdp, /isLastPageTarget/);
+    assert.doesNotMatch(cdp, /newWindow: false/);
     const fwd = readFileSync(resolve(root, "docker/cdp-fwd.py"), "utf8");
     assert.match(fwd, /PUT /);
     assert.match(fwd, /force_connection_close/);

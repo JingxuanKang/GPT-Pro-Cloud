@@ -21,7 +21,9 @@ CHROMIUM_KILL_PATTERNS = (
 
 def kill_chromium() -> None:
     for pat in CHROMIUM_KILL_PATTERNS:
-        subprocess.run(["pkill", "-f", pat], check=False, timeout=5)
+        # Patterns that start with -- must follow pkill's -- or pkill
+        # treats them as its own flags (e.g. --user-data-dir=...).
+        subprocess.run(["pkill", "-f", "--", pat], check=False, timeout=5)
 
 
 def display() -> str:

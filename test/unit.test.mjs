@@ -48,6 +48,12 @@ describe("chromium flags", () => {
     assert.ok(flags.includes("--proxy-server=http://host.docker.internal:7890"));
   });
 
+  it("omits --app when CDP / split-screen is on so extra windows stay in-process", () => {
+    const flags = chromiumExtraFlags({ startUrl: "https://chatgpt.com", cdp: true });
+    assert.equal(flags.includes("--app=https://chatgpt.com"), false);
+    assert.ok(flags.includes("https://chatgpt.com"));
+  });
+
   it("omits remote-debugging flags unless CDP is on", () => {
     assert.deepEqual(chromiumCdpArgs(false), []);
     assert.deepEqual(chromiumCdpArgs(true), [

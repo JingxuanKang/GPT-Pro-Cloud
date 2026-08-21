@@ -94,16 +94,18 @@ while true; do
         echo "[autostart] proxy-server=${PROXY_URL}"
     fi
     CDP_FLAGS=""
+    WINDOW_ARG="--app=${START_URL}"
     if [ "${CDP_ON}" = "1" ]; then
         CDP_FLAGS="--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins=*"
-        echo "[autostart] cdp=on :9222"
+        # Normal window: extra Target.createTarget windows must not end the process.
+        # --app exits when its only window is closed or tab-ified.
+        WINDOW_ARG="${START_URL}"
+        echo "[autostart] cdp=on :9222 window=normal"
     else
         echo "[autostart] cdp=off"
     fi
-    # No --kiosk: kiosk + --app blocks extra chatgpt.com tabs. Tab seats use
-    # Target.createTarget (new window, parked off-screen). Members stream the
-    # page viewport via CDP, so they never see the tab strip. First-time login
-    # still uses this primary --app window over VNC.
+    # No --kiosk. CDP-off uses --app for a single exclusive VNC window.
+    # CDP-on uses a normal window so parked seat windows stay in-process.
     echo "[autostart] 启动 Chromium → ${START_URL}"
     /usr/bin/chromium \
         --no-sandbox \
@@ -118,8 +120,9 @@ while true; do
         --disable-background-networking \
         --user-data-dir=/config/chromium \
         ${CDP_FLAGS} \
-        --app="${START_URL}" \
+        "${WINDOW_ARG}" \
         ${PROXY_FLAG}
-    echo "[autostart] Chromium 退出，2 秒后重启"
+    code=$?
+    echo "[autostart] Chromium 退出 code=${code}，2 秒后重启"
     sleep 2
 done
