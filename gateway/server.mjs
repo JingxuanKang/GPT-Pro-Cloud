@@ -16,6 +16,7 @@ import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mj
 import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, targetExists } from "../lib/cdp.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import {
+  CHATGPT_NOT_LOGGED_IN,
   DESK_UNREACHABLE,
   WORKSPACE_NOT_READY,
   acceptOnboardResult,
@@ -540,7 +541,12 @@ async function handleApi(req, res, url, sess) {
         projectUrl: storedUrl,
         hasSession,
       });
-      if (!gate.ok) return json(res, gate.status || 409, { error: gate.error, code: gate.code });
+      if (!gate.ok) {
+        return json(res, gate.status || 409, {
+          error: gate.error || "该账号尚未登录 ChatGPT",
+          code: gate.code,
+        });
+      }
     }
     let decision;
     try {
@@ -721,7 +727,7 @@ async function handleApi(req, res, url, sess) {
     try {
       const tab = seats.ofUser(id, sess.user.id);
       const r = await lockSeatToProject(id, sess.user, tab?.targetId);
-      if (!r?.ok) return json(res, 409, { error: r?.error || WORKSPACE_NOT_READY });
+      if (!r?.ok) return json(res, 409, { error: r?.error || "工作区未就绪" });
       return json(res, 200, { ok: true, name, action: r.action || "opened", created: false, url: r.url || "" });
     } catch (e) {
       const raw = e.message || "";

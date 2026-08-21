@@ -168,7 +168,7 @@ describe("assign while split-screen is on", () => {
       createProject: async () => ({ ok: true, url: ADA, memory: "project-only" }),
     });
     assert.equal(r.ok, false);
-    assert.equal(r.error, CHATGPT_NOT_LOGGED_IN);
+    assert.match(r.error, /该账号尚未登录 ChatGPT/);
     assert.deepEqual(users.get(ada.id).desks, ["b"]);
   });
 
