@@ -140,6 +140,16 @@ describe("standalone product", () => {
     assert.match(gw, /warmAllParkedMemberSeats/);
     assert.match(gw, /warmDeskMemberSeats/);
     assert.match(gw, /findParkedProjectTarget/);
+    assert.match(readFileSync(resolve(root, "package.json"), "utf8"), /tab-open\.test\.mjs/);
+    assert.match(gw, /allocateTabSeatTarget/);
+    assert.match(gw, /OPEN_CDP_MS/);
+    const openStart = gw.indexOf("const open = url.pathname.match(/^\\/api\\/desks\\/([a-z0-9-]+)\\/open$/)");
+    const openBlock = gw.slice(openStart, gw.indexOf("const paste = url.pathname.match"));
+    assert.doesNotMatch(openBlock, /deskHasChatGPTSession/);
+    assert.doesNotMatch(openBlock, /withDeskCdp/);
+    assert.match(openBlock, /memberCdpMustBeTab/);
+    assert.match(ui, /timeoutMs: 8000/);
+    assert.match(ui, /进入超时，请再试一次/);
     assert.match(gw, /assetQuery/);
     assert.match(gw, /no-store, no-cache, must-revalidate/);
     assert.match(gw, /CLOSE_SEAT_MS/);

@@ -102,6 +102,9 @@ describe("CDP off — share / jail / onboard stay gated", () => {
     const openStart = gw.indexOf("const open = url.pathname.match(/^\\/api\\/desks\\/([a-z0-9-]+)\\/open$/)");
     const openBlock = gw.slice(openStart, gw.indexOf("const paste = url.pathname.match"));
     assert.match(openBlock, /const cdp = users\.deskCdpOn\(id\)/);
+    assert.doesNotMatch(openBlock, /deskHasChatGPTSession/);
+    assert.match(openBlock, /allocateTabSeatTarget/);
+    assert.match(openBlock, /hasSession: null/);
     assert.equal([...openBlock.matchAll(/armSeatProjectJail\(/g)].length, 1);
     assert.match(openBlock, /if \(cdp && sess\.user\.role !== "admin" && projectUrl\) armSeatProjectJail/);
     assert.doesNotMatch(openBlock, /kickOnboard/);

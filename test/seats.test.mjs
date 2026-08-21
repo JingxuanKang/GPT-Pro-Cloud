@@ -11,6 +11,7 @@ import {
   parseTabSeatCap,
   publicSeat,
   seatOpenFlags,
+  targetTakenError,
   targetsVisibleToSeat,
 } from "../lib/seats.mjs";
 import {
@@ -22,6 +23,7 @@ import {
   deskJsonNewUrl,
   isLastPageTarget,
   PARKED_WINDOW_X,
+  CDP_SEND_MS,
   CLOSE_TARGET_MS,
   parkSeatTarget,
   pickUnclaimedChatGPTTarget,
@@ -274,6 +276,16 @@ describe("cannot see other targets", () => {
 });
 
 describe("disconnect one tab", () => {
+  it("refuses to claim a target already owned by another member", () => {
+    const reg = createSeatRegistry({ cap: 3 });
+    reg.claim("a", user("1", "ada"), { mode: "tab", targetId: "t-ada" });
+    assert.throws(
+      () => reg.claim("a", user("2", "bob"), { mode: "tab", targetId: "t-ada" }),
+      (err) => err.code === targetTakenError().code,
+    );
+    assert.equal(reg.ofUser("a", "2"), undefined);
+  });
+
   it("releaseByUser closes only that member's tab seat", () => {
     const reg = createSeatRegistry({ cap: 3 });
     const ada = reg.claim("a", user("1", "ada"), { mode: "vnc" });
@@ -374,6 +386,7 @@ describe("session cookies and input mapping", () => {
     assert.equal(named.hasSession, true);
     assert.equal(PARKED_WINDOW_X <= -1000, true);
     assert.equal(CLOSE_TARGET_MS, 2000);
+    assert.equal(CDP_SEND_MS, 4000);
   });
 
   it("treats a busy debugger as unknown session, not logged-out", async () => {

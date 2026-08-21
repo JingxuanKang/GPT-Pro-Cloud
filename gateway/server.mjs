@@ -13,7 +13,8 @@ import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat, seatOpenFlags } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, parkSeatTarget, targetExists, withDeadline } from "../lib/cdp.mjs";
+import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, parkSeatTarget, reserveTarget, targetExists, withDeadline } from "../lib/cdp.mjs";
+import { allocateTabSeatTarget, memberCdpMustBeTab, OPEN_CDP_MS, OPEN_FAIL, OPEN_TAB_FAIL } from "../lib/tab-open.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, pickTargetForProject, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import {
   CHATGPT_NOT_LOGGED_IN,
@@ -128,7 +129,7 @@ async function runOnboard(id, name, { create = true, targetId } = {}) {
 async function findParkedProjectTarget(deskId, projectUrl, claimedTargetIds = []) {
   if (!projectUrl) return null;
   try {
-    const pages = await listDeskTargets(deskId);
+    const pages = await withDeadline(listDeskTargets(deskId), 2000, "工作区还没准备好");
     return pickTargetForProject(pages, { projectUrl, claimedTargetIds });
   } catch {
     return null;
@@ -244,6 +245,7 @@ async function applyCdpPort(deskId, on) {
 }
 
 async function enableDeskSplitScreen(deskId) {
+  // Enable still returns 该账号尚未登录 ChatGPT; member /open must not wait on that probe.
   const job = await runEnableJob({
     deskId,
     users,
@@ -636,21 +638,15 @@ async function handleApi(req, res, url, sess) {
     const extraOccupants = presence.list(id).map((v) => ({ userId: v.id }));
     const storedUrl = cdp && sess.user.role !== "admin" ? users.projectUrlOn(sess.user.id, id) : "";
     if (cdp && sess.user.role !== "admin") {
-      let hasSession = null;
-      try {
-        hasSession = await deskHasChatGPTSession(id);
-      } catch {
-        hasSession = null;
-      }
       const gate = memberOpenDecision({
         cdp,
         role: sess.user.role,
         projectUrl: storedUrl,
-        hasSession,
+        hasSession: null,
       });
       if (!gate.ok) {
         return json(res, gate.status || 409, {
-          error: gate.error || "该账号尚未登录 ChatGPT",
+          error: gate.error || "工作区未就绪",
           code: gate.code,
         });
       }
@@ -661,54 +657,42 @@ async function handleApi(req, res, url, sess) {
     } catch (e) {
       return json(res, e.status || 409, { error: e.message, cap: seats.cap, code: e.code });
     }
-    const claimedTargetIds = seats.list(id).map((s) => s.targetId).filter(Boolean);
     const projectUrl = sess.user.role === "admin" ? "" : storedUrl;
     const startUrl = seatStartUrl({ cdp: cdp && sess.user.role !== "admin", projectUrl });
     let seat;
     let reused = false;
-    if (decision.attach) {
-      seat = decision.seat || seats.ofUser(id, sess.user.id);
-      if (seat?.mode === "tab") {
-        const alive = await targetExists(id, seat.targetId);
-        if (alive) {
-          seats.claim(id, sess.user, { projectUrl });
-          seats.beat(seat.id);
-          reused = true;
-        } else {
-          try {
-            const found = await findParkedProjectTarget(id, projectUrl, claimedTargetIds);
-            if (found?.id) {
-              seat = seats.claim(id, sess.user, { mode: "tab", targetId: found.id, projectUrl });
-              reused = true;
-            } else {
-              const created = await createParkedChatGPTTab(id, { claimedTargetIds, startUrl });
-              seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId, projectUrl });
-            }
-          } catch (e) {
-            return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
-          }
-        }
-      } else {
-        seats.beat(seat.id);
+    if (cdp && sess.user.role !== "admin") {
+      if (!memberCdpMustBeTab(cdp, sess.user.role, decision.mode)) {
+        return json(res, 502, { error: OPEN_TAB_FAIL });
       }
-    } else if (decision.mode === "tab") {
       try {
-        const found = await findParkedProjectTarget(id, projectUrl, claimedTargetIds);
-        if (found?.id) {
-          seat = seats.claim(id, sess.user, { mode: "tab", targetId: found.id, projectUrl });
-          reused = true;
-        } else {
-          const created = await createParkedChatGPTTab(id, { claimedTargetIds, startUrl });
-          try {
-            seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId, projectUrl });
-          } catch (e) {
-            await closeTarget(id, created.targetId).catch(() => {});
-            return json(res, e.status || 409, { error: e.message, cap: seats.cap });
-          }
-        }
+        const got = await withDeadline(
+          allocateTabSeatTarget({
+            deskId: id,
+            user: sess.user,
+            projectUrl,
+            startUrl,
+            seats,
+            existing: decision.seat || seats.ofUser(id, sess.user.id),
+            targetExists,
+            findParked: findParkedProjectTarget,
+            createParked: createParkedChatGPTTab,
+            reserveTarget,
+          }),
+          OPEN_CDP_MS,
+          OPEN_FAIL,
+        );
+        seat = seats.claim(id, sess.user, { mode: "tab", targetId: got.targetId, projectUrl });
+        reused = !!got.reused;
       } catch (e) {
-        return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
+        return json(res, e.status || 502, { error: e.message || OPEN_TAB_FAIL, cap: seats.cap, code: e.code });
       }
+      if (seat.mode !== "tab" || !seat.targetId) return json(res, 502, { error: OPEN_TAB_FAIL });
+    } else if (decision.attach) {
+      seat = decision.seat || seats.ofUser(id, sess.user.id);
+      seats.beat(seat.id);
+    } else if (decision.mode === "tab") {
+      return json(res, 502, { error: OPEN_TAB_FAIL });
     } else {
       seat = seats.claim(id, sess.user, { mode: "vnc" });
     }
