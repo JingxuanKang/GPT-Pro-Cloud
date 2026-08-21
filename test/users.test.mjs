@@ -100,6 +100,7 @@ describe("users + presence", () => {
     assert.equal(store.setDeskCdp("a", false), false);
     assert.equal(store.deskCdpOn("a"), false);
     assert.throws(() => store.setDeskCdp("zz", true), /账号不存在/);
+    assert.throws(() => store.setDeskCdp("a", true), (err) => err.message === "多人分屏暂未开放");
   });
 
   it("ignores leftover deskCdp=true and a leftover global settings.assist", () => {

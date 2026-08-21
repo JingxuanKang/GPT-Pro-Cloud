@@ -402,4 +402,27 @@ describe("standalone product", () => {
     const autostart = readFileSync(resolve(root, "docker/autostart"), "utf8");
     assert.doesNotMatch(autostart, /chatgpt-project-jail|load-extension=.*project/i);
   });
+
+  it("locks 多人分屏 off for this release", () => {
+    const gw = readFileSync(resolve(root, "gateway/server.mjs"), "utf8");
+    const ui = readFileSync(resolve(root, "gateway/web/app.js"), "utf8");
+    const userStore = readFileSync(resolve(root, "lib/users.mjs"), "utf8");
+    const deskCdpOnFn = userStore.slice(userStore.indexOf("deskCdpOn("), userStore.indexOf("setDeskCdp"));
+    assert.match(deskCdpOnFn, /return false/);
+    assert.doesNotMatch(deskCdpOnFn, /data\.deskCdp|process\.env/);
+    assert.match(userStore, /if \(on\) throw new Error\("多人分屏暂未开放"\)/);
+    assert.match(gw, /if \(body && "cdp" in body && body\.cdp\) return json\(res, 400, \{ error: "多人分屏暂未开放" \}\)/);
+    const openStart = gw.indexOf("const open = url.pathname.match(/^\\/api\\/desks\\/([a-z0-9-]+)\\/open$/)");
+    const openBlock = gw.slice(openStart, gw.indexOf("const paste = url.pathname.match"));
+    assert.match(openBlock, /if \(cdp && projectUrl\) armSeatProjectJail/);
+    assert.match(openBlock, /if \(cdp\) kickOnboard/);
+    const settingsStart = ui.indexOf("function renderSettings");
+    const settingsBlock = ui.slice(settingsStart, ui.indexOf("const isMac", settingsStart));
+    assert.match(settingsBlock, /多人分屏暂未开放/);
+    assert.doesNotMatch(settingsBlock, /data-cdp-toggle|checkbox|type="checkbox"/);
+    const uiDeskCdp = ui.slice(ui.indexOf("function deskCdpOn"), ui.indexOf("function route"));
+    assert.match(uiDeskCdp, /return false/);
+    assert.match(ui, /if \(deskCdpOn\(state\.deskId\)\) ensureWorkspace\(\)/);
+    assert.doesNotMatch(ui, /data-cdp-toggle/);
+  });
 });

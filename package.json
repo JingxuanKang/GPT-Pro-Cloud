@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/unit.test.mjs test/structure.test.mjs test/users.test.mjs test/desks.test.mjs test/docker.test.mjs test/kick.test.mjs test/api.test.mjs test/seats.test.mjs test/project-jail.test.mjs"
+    "test": "node --test test/unit.test.mjs test/structure.test.mjs test/users.test.mjs test/desks.test.mjs test/docker.test.mjs test/kick.test.mjs test/api.test.mjs test/seats.test.mjs test/project-jail.test.mjs test/cdp-lock.test.mjs"
   }
 }
