@@ -7,7 +7,8 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createUserStore } from "../lib/users.mjs";
 import { decideOpenMode, createSeatRegistry, multiUserOffError } from "../lib/seats.mjs";
-import { seatStartUrl, CHATGPT_START } from "../lib/project-jail.mjs";
+import { CHATGPT_START } from "../lib/cdp.mjs";
+import { seatStartUrl } from "../lib/project-jail.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOCK_MSG = "多人分屏暂未开放";
