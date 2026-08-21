@@ -3,12 +3,20 @@ const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    credentials: "same-origin",
-    headers: opts.body ? { "content-type": "application/json", ...opts.headers } : opts.headers,
-    ...opts,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
+  const { timeoutMs, headers, body, signal, ...rest } = opts;
+  let res;
+  try {
+    res = await fetch(path, {
+      credentials: "same-origin",
+      headers: body ? { "content-type": "application/json", ...headers } : headers,
+      ...rest,
+      signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : signal,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    if (e.name === "TimeoutError" || e.name === "AbortError") throw new Error("进入超时，请再试一次");
+    throw e;
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401 && state.me && path !== "/api/login" && path !== "/api/setup") {
@@ -1186,7 +1194,7 @@ function bindTabClipboard() {
 }
 
 async function openDesk(id) {
-  const r = await api(`/api/desks/${id}/open`, { method: "POST" });
+  const r = await api(`/api/desks/${id}/open`, { method: "POST", timeoutMs: 8000 });
   state.deskMode = r.mode || "vnc";
   state.seatId = r.seat?.id || null;
   state.entering = !!r.entering;
