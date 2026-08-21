@@ -223,7 +223,11 @@ describe("standalone product", () => {
     assert.doesNotMatch(ui, /老板号/);
     assert.doesNotMatch(ui, /互不可见/);
     assert.doesNotMatch(ui, /顶栏格子/);
+    const cdpStart = ui.indexOf('class="cdp-rows"');
     const assistStart = ui.indexOf('class="assist-note"');
+    assert.ok(cdpStart > -1 && cdpStart < assistStart, "per-desk CDP toggles come before the settings essay");
+    assert.match(ui, /还没有账号，先去/);
+    assert.match(ui, /href="#\/admin"/);
     const assistBlock = ui.slice(assistStart, ui.indexOf("</section>", assistStart));
     assert.match(assistBlock, /记忆隔离/);
     assert.match(assistBlock, /记忆互不影响/);
@@ -234,6 +238,7 @@ describe("standalone product", () => {
     assert.match(assistBlock, /不能再开 Chrome 标签/);
     assert.doesNotMatch(assistBlock, /完全不可能|无法打开别人的项目/);
     assert.doesNotMatch(assistBlock, /复制粘贴/);
+    assert.doesNotMatch(assistBlock, /data-cdp-toggle/);
     const css = readFileSync(resolve(root, "gateway/web/app.css"), "utf8");
     assert.match(css, /\.cardgrid/);
     assert.match(css, /\.sec-head/);
@@ -241,6 +246,7 @@ describe("standalone product", () => {
     assert.match(css, /\.status\.live/);
     assert.match(css, /\.acts/);
     assert.match(css, /\.assist-note/);
+    assert.match(css, /\.cdp-empty/);
     assert.match(css, /\.seat-cast/);
     assert.doesNotMatch(css, /\.clip-note/);
     const zhReadme = readFileSync(resolve(root, "README.zh-CN.md"), "utf8");
