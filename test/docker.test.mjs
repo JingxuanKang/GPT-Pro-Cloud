@@ -14,6 +14,8 @@ import {
   ensureDeskContainer,
   removeDeskContainer,
   DESK_LABEL,
+  DOCKER_REMOVE_MS,
+  DOCKER_REQUEST_MS,
 } from "../lib/docker.mjs";
 
 const TEMPLATE = {
@@ -58,6 +60,8 @@ const TEMPLATE = {
 
 describe("deskContainerSpec", () => {
   it("clones image, network alias, data dir and strips A's proxy override", () => {
+    assert.equal(DOCKER_REMOVE_MS <= DOCKER_REQUEST_MS, true);
+    assert.equal(DOCKER_REMOVE_MS <= 10_000, true);
     assert.equal(dataRootFromInspect(TEMPLATE), "/srv/gpt-pro-cloud/data");
     assert.equal(templateNetwork(TEMPLATE), "gpt-pro-cloud_default");
     const { name, body } = deskContainerSpec("c", TEMPLATE);

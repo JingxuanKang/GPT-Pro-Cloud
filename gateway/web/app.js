@@ -1387,8 +1387,13 @@ function bind() {
     btn.onclick = async () => {
       const name = btn.getAttribute("data-name") || "这位成员";
       if (!confirm(`确定移除 ${name}？对方将无法再登录。`)) return;
-      await api(`/api/admin/users/${btn.getAttribute("data-del")}`, { method: "DELETE" });
-      await refresh();
+      try {
+        await api(`/api/admin/users/${btn.getAttribute("data-del")}`, { method: "DELETE" });
+        toast(`已移除 ${name}`);
+        await refresh();
+      } catch (err) {
+        toast(err.message || "未能移除");
+      }
     };
   });
   document.querySelectorAll("[data-proxy-pick]").forEach((btn) => {
