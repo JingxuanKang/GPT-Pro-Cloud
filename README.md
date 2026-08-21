@@ -128,7 +128,7 @@ Everything lives in `.env` — the commented [`.env.example`](.env.example) is t
 | --- | --- |
 | `AUTH_PASSWORD` | Optional: pre-seed the administrator password; leave empty to use the first-visit wizard |
 | `INSTANCES` | Built-in compose seats (`a,b`). Extra desks are added in the panel |
-| `TAB_SEATS_MAX` | Concurrent chatgpt.com tab seats per account when multi-user is on (default `3`, range 1–8). Members get tab seats; the admin uses the full desktop. Idle tabs close after ~45s without a presence beat |
+| `TAB_SEATS_MAX` | Concurrent chatgpt.com tab seats per account when multi-user is on (default `3`, range 1–8). Members get tab seats; the admin uses the full desktop. Leaving parks the seat window so the next open reattaches it |
 | `BIND_ADDR` | Address the gateway publishes on; `127.0.0.1` when tunneling, LAN or VPN address on a private network |
 | `PROXY_URL_A`, `PROXY_URL_B` | Default per-account proxy; Settings (per desk or Apply to all) take precedence and apply immediately |
 | `PROXY_URL` | Default proxy shared by every account |
@@ -144,7 +144,7 @@ One ChatGPT account is still one desktop container and one Chromium profile (`--
 - When multi-user (CDP) is **off**, the first occupant gets exclusive KasmVNC. A second person is refused (`409 CDP_OFF`).
 - When multi-user is **on**, members get their own `chatgpt.com` tab seats in the same Chromium, jailed to their project. The admin gets the complete uncut desktop (VNC) and can see other people's Chrome tabs. Members never receive the full desktop. Later members get a new window (`newWindow: true`), parked off-screen — never a tab on the last/primary window. The gateway streams **that window only** (CDP `Page.startScreencast`) and injects pointer/keyboard with CDP `Input`. The member never sees the tab strip or another seat's target.
 - **断开** on the account card is per-seat: it drops that member's tab (or VNC) without killing the other tab or the container.
-- Cap: `TAB_SEATS_MAX` (default 3 tab seats; everyone is a tab when multi-user is on). An idle tab seat is closed after about 45 seconds without a presence beat.
+- Cap: `TAB_SEATS_MAX` (default 3 tab seats; everyone is a tab when multi-user is on). Leaving a desk parks that member window and keeps `targetId`; the next open attaches the existing target instead of `createTarget`. The 45s idle timer only drops presence — it does not close the window. Parked seat windows are closed when split-screen is turned off, or when the member is kicked or unassigned.
 - A jailed member seat hides the entire left sidebar so they only see their project workspace. A navigation to another `/g/g-p-…/project` is bounced back. If the stored project URL is missing, the member is refused (`工作区未就绪`) — the admin re-runs the enable job or unchecks and rechecks the user. Share and page assist run only while that desk's split-screen is on.
 - `--kiosk` is off. With split-screen on, Chromium is a normal window (not `--app`) so extra seat windows stay in-process. Extra targets are new windows parked off-screen; members see the page viewport, not browser chrome.
 

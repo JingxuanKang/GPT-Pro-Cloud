@@ -12,8 +12,8 @@ import { createPresence } from "../lib/presence.mjs";
 import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
-import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, targetExists } from "../lib/cdp.mjs";
+import { createSeatRegistry, parseTabSeatCap, publicSeat, seatOpenFlags } from "../lib/seats.mjs";
+import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, parkSeatTarget, targetExists } from "../lib/cdp.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import {
   CHATGPT_NOT_LOGGED_IN,
@@ -22,6 +22,7 @@ import {
   acceptOnboardResult,
   assignDesksWithProjects,
   exclusiveOccupied,
+  removedDesks,
   lockMemberToStoredProject,
   memberOpenDecision,
   renameMemberWithProjects,
@@ -228,6 +229,29 @@ async function releaseUserSeats(userId) {
   const released = seats.releaseByUser(userId);
   await Promise.all(released.map((s) => closeSeatTab(s)));
   return released;
+}
+
+async function parkUserSeatWindows(userId) {
+  const held = seats.ofUserAll(userId);
+  const parked = [];
+  for (const seat of held) {
+    if (seat.mode === "tab" && seat.targetId) {
+      await parkSeatTarget(seat.deskId, seat.targetId).catch(() => {});
+      parked.push(seat);
+    } else {
+      seats.release(seat.id);
+    }
+  }
+  return parked;
+}
+
+async function closeUnassignedSeatTabs(userId, prevDesks, nextDesks) {
+  for (const deskId of removedDesks(prevDesks, nextDesks)) {
+    const seat = seats.ofUser(deskId, userId);
+    if (!seat) continue;
+    seats.release(seat.id);
+    await closeSeatTab(seat).catch(() => {});
+  }
 }
 
 const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: true });
@@ -520,7 +544,7 @@ async function handleApi(req, res, url, sess) {
     return json(res, 200, { viewers: presence.beat(deskId, sess.user), seat: publicSeat(seat) });
   }
   if (url.pathname === "/api/presence/leave" && req.method === "POST") {
-    await releaseUserSeats(sess.user.id);
+    await parkUserSeatWindows(sess.user.id);
     presence.leaveAll(sess.user.id);
     return json(res, 200, { ok: true, presence: presence.all() });
   }
@@ -561,6 +585,7 @@ async function handleApi(req, res, url, sess) {
     const projectUrl = sess.user.role === "admin" ? "" : storedUrl;
     const startUrl = seatStartUrl({ cdp: cdp && sess.user.role !== "admin", projectUrl });
     let seat;
+    let reused = false;
     if (decision.attach) {
       seat = decision.seat || seats.ofUser(id, sess.user.id);
       if (seat?.mode === "tab") {
@@ -575,6 +600,7 @@ async function handleApi(req, res, url, sess) {
         } else {
           seats.claim(id, sess.user, { projectUrl });
           seats.beat(seat.id);
+          reused = true;
         }
       } else {
         seats.beat(seat.id);
@@ -598,8 +624,8 @@ async function handleApi(req, res, url, sess) {
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
     if (cdp && sess.user.role !== "admin" && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
-    if (cdp && sess.user.role !== "admin") kickOnboard(id, sess.user, seat?.targetId);
-    return json(res, 200, { ok: true, id, mode: seat.mode, seat: publicSeat(seat), cap: seats.cap });
+    if (cdp && sess.user.role !== "admin" && !reused) kickOnboard(id, sess.user, seat?.targetId);
+    return json(res, 200, { ok: true, id, mode: seat.mode, seat: publicSeat(seat), cap: seats.cap, ...seatOpenFlags({ mode: seat.mode, reused }) });
   }
   const paste = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/paste$/);
   if (paste && req.method === "POST") {
@@ -791,6 +817,7 @@ async function handleApi(req, res, url, sess) {
         if (!renamed.ok) return json(res, renamed.status || 400, { error: renamed.error });
       }
       if (Array.isArray(body.desks)) {
+        const prevDesks = users.get(one[1])?.desks || [];
         const assigned = await assignDesksWithProjects({
           user: users.get(one[1]),
           nextDesks: body.desks,
@@ -798,6 +825,7 @@ async function handleApi(req, res, url, sess) {
           hasSession: (deskId) => deskHasChatGPTSession(deskId),
           createProject: (deskId, member) => createMemberProject(deskId, member),
         });
+        await closeUnassignedSeatTabs(one[1], prevDesks, assigned.user?.desks || []);
         if (!assigned.ok) return json(res, assigned.status || 400, { error: assigned.error, user: assigned.user });
       }
       const patch = {};
@@ -938,10 +966,7 @@ async function reconcileExtraDesks() {
 
 setInterval(() => {
   for (const seat of seats.idleTabs()) {
-    seats.release(seat.id);
     presence.leave(seat.deskId, seat.userId);
-    closeSeatTab(seat).catch(() => {});
-    console.log(`seat idle closed desk=${seat.deskId} user=${seat.username}`);
   }
 }, 15_000);
 

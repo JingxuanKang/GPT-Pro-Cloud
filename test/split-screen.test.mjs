@@ -15,6 +15,7 @@ import {
   acceptOnboardResult,
   assignDesksWithProjects,
   exclusiveOccupied,
+  removedDesks,
   lockMemberToStoredProject,
   memberOpenDecision,
   renameMemberWithProjects,
@@ -196,6 +197,10 @@ describe("enable job", () => {
 });
 
 describe("assign while split-screen is on", () => {
+  it("lists desks a member lost so leftover seat windows can close", () => {
+    assert.deepEqual(removedDesks(["a", "b"], ["a"]), ["b"]);
+    assert.deepEqual(removedDesks(["a"], ["a", "b"]), []);
+  });
   it("does not persist the desk when project create fails", async () => {
     const users = store();
     users.setDeskCdp("a", true);

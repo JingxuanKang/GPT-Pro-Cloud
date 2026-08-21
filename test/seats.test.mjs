@@ -10,6 +10,7 @@ import {
   multiUserOffError,
   parseTabSeatCap,
   publicSeat,
+  seatOpenFlags,
   targetsVisibleToSeat,
 } from "../lib/seats.mjs";
 import {
@@ -21,6 +22,7 @@ import {
   deskJsonNewUrl,
   isLastPageTarget,
   PARKED_WINDOW_X,
+  parkSeatTarget,
   pickUnclaimedChatGPTTarget,
   probeDeskSession,
   releaseReservedTarget,
@@ -150,6 +152,24 @@ describe("seat assignment", () => {
     assert.equal(again.id, first.id);
     assert.equal(again.targetId, "t-ada");
     assert.equal(reg.tabCount("a"), 1);
+  });
+
+  it("keeps parked tab seats after leave so the next open can attach the same target", () => {
+    const reg = createSeatRegistry({ cap: 3 });
+    const a = reg.claim("a", user("1", "ada"), { mode: "tab", targetId: "t-a" });
+    const b = reg.claim("b", user("1", "ada"), { mode: "tab", targetId: "t-b" });
+    reg.claim("a", user("2", "bob"), { mode: "tab", targetId: "t-bob" });
+    const parked = reg.ofUserAll("1");
+    assert.equal(parked.length, 2);
+    assert.deepEqual(parked.map((s) => s.targetId).sort(), ["t-a", "t-b"]);
+    assert.ok(reg.get(a.id));
+    assert.ok(reg.get(b.id));
+    const again = reg.decide("a", user("1", "ada"), { cdp: true });
+    assert.equal(again.attach, true);
+    assert.equal(again.seat.targetId, "t-a");
+    assert.deepEqual(seatOpenFlags({ mode: "tab", reused: true }), { reused: true, entering: false });
+    assert.deepEqual(seatOpenFlags({ mode: "tab", reused: false }), { reused: false, entering: true });
+    assert.deepEqual(seatOpenFlags({ mode: "vnc", reused: false }), { reused: false, entering: false });
   });
 
   it("stores the member project URL on the seat for the jail", () => {
@@ -291,16 +311,16 @@ describe("disconnect one tab", () => {
     assert.equal(seats.ofUser("a", "2"), undefined);
   });
 
-  it("idle tabs can be closed without touching a live seat", () => {
+  it("lists idle tabs without dropping the parked seat", () => {
     const reg = createSeatRegistry({ cap: 3, idleMs: 1000 });
-    reg.claim("a", user("1", "ada"), { mode: "tab", targetId: "t-ada", now: 0 });
+    const ada = reg.claim("a", user("1", "ada"), { mode: "tab", targetId: "t-ada", now: 0 });
     const bob = reg.claim("a", user("2", "bob"), { mode: "tab", targetId: "t-bob", now: 5000 });
     const idle = reg.idleTabs(5000);
     assert.equal(idle.length, 1);
     assert.equal(idle[0].username, "ada");
-    reg.release(idle[0].id);
+    assert.ok(reg.get(ada.id));
     assert.ok(reg.get(bob.id));
-    assert.equal(reg.tabCount("a"), 1);
+    assert.equal(reg.tabCount("a"), 2);
   });
 });
 
@@ -421,6 +441,48 @@ describe("session cookies and input mapping", () => {
     assert.equal(second.targetId, "t-2");
     assert.equal(versionHits, 1);
     assert.equal(connects, 1);
+  });
+
+  it("parks an existing seat window without createTarget", async () => {
+    const methods = [];
+    const fetchImpl = async (url) => {
+      const u = String(url);
+      if (u.includes("/json/version")) {
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/x" }) };
+      }
+      if (u.endsWith("/json") || u.endsWith("/json/list")) {
+        return {
+          ok: true,
+          json: async () => [{ id: "t-live", type: "page", url: "https://chatgpt.com/" }],
+        };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    const connect = () => ({
+      ready: Promise.resolve(),
+      ws: { readyState: 1, addEventListener() {} },
+      async send(method, params) {
+        methods.push(method);
+        if (method === "Target.getTargets") {
+          return { targetInfos: [{ targetId: "t-live", type: "page", url: "https://chatgpt.com/" }] };
+        }
+        if (method === "Browser.getWindowForTarget") {
+          assert.equal(params.targetId, "t-live");
+          return { windowId: 9 };
+        }
+        if (method === "Browser.setWindowBounds") {
+          assert.equal(params.windowId, 9);
+          return {};
+        }
+        throw new Error(method);
+      },
+      close() {},
+    });
+    const pool = createDeskBrowserPool();
+    assert.equal(await parkSeatTarget("a", "t-live", { fetchImpl, connect, pool }), true);
+    assert.equal(methods.includes("Target.createTarget"), false);
+    assert.equal(methods.includes("Target.closeTarget"), false);
+    assert.equal(methods.includes("Browser.setWindowBounds"), true);
   });
 
   it("creates a tab via HTTP /json/new when Target.createTarget fails, without a second /json/version", async () => {
