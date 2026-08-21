@@ -22,6 +22,7 @@ import {
   deskJsonNewUrl,
   isLastPageTarget,
   PARKED_WINDOW_X,
+  CLOSE_TARGET_MS,
   parkSeatTarget,
   pickUnclaimedChatGPTTarget,
   probeDeskSession,
@@ -372,6 +373,7 @@ describe("session cookies and input mapping", () => {
     assert.equal(named.known, true);
     assert.equal(named.hasSession, true);
     assert.equal(PARKED_WINDOW_X <= -1000, true);
+    assert.equal(CLOSE_TARGET_MS, 2000);
   });
 
   it("treats a busy debugger as unknown session, not logged-out", async () => {

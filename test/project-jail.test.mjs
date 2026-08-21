@@ -27,6 +27,7 @@ import {
   parseChatGPTProjectUrl,
   projectJailScript,
   pickNamedProjectHref,
+  pickTargetForProject,
   projectUrlFromOnboard,
   seatStartUrl,
   slugifyProjectName,
@@ -65,6 +66,15 @@ describe("ChatGPT project URL helpers", () => {
     assert.equal(isOtherProjectUrl(BOB, ADA), true);
     assert.equal(isOtherProjectUrl(BOB_CHAT, ADA), true);
     assert.equal(isOtherProjectUrl("https://chatgpt.com/c/plain", ADA), false);
+  });
+
+  it("adopts a parked project window and never the primary chatgpt.com page", () => {
+    const primary = { id: "t-home", type: "page", url: "https://chatgpt.com/" };
+    const ada = { id: "t-ada", type: "page", url: ADA };
+    const bob = { id: "t-bob", type: "page", url: BOB };
+    assert.equal(pickTargetForProject([primary, ada, bob], { projectUrl: ADA })?.id, "t-ada");
+    assert.equal(pickTargetForProject([primary, ada], { projectUrl: ADA, claimedTargetIds: ["t-ada"] }), null);
+    assert.equal(pickTargetForProject([primary], { projectUrl: ADA }), null);
   });
 });
 

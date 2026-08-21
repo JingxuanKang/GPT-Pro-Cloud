@@ -1,5 +1,5 @@
 import http from "node:http";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 import { extname, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import httpProxy from "http-proxy";
@@ -13,8 +13,8 @@ import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat, seatOpenFlags } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, parkSeatTarget, targetExists } from "../lib/cdp.mjs";
-import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
+import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, parkSeatTarget, targetExists, withDeadline } from "../lib/cdp.mjs";
+import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, pickTargetForProject, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import {
   CHATGPT_NOT_LOGGED_IN,
   DESK_UNREACHABLE,
@@ -64,8 +64,8 @@ const liveSockets = createSocketHub();
 const seatWss = new WebSocketServer({ noServer: true });
 const loginLimiter = createLoginLimiter({ maxFails: 10, windowMs: 15 * 60 * 1000 });
 const deskCdpLocks = new Map();
-/** Yield so a second /open can create a tab before assist grabs the debugger. */
-const ONBOARD_YIELD_MS = 1500;
+const CLOSE_SEAT_MS = 2000;
+const DOCKER_DELETE_MS = 8_000;
 
 async function withDeskCdp(id, fn) {
   const prev = deskCdpLocks.get(id) || Promise.resolve();
@@ -125,14 +125,73 @@ async function runOnboard(id, name, { create = true, targetId } = {}) {
   return last;
 }
 
-/** Job-only: parked tab, require project-only memory, persist URL. Never used on member open. */
+async function findParkedProjectTarget(deskId, projectUrl, claimedTargetIds = []) {
+  if (!projectUrl) return null;
+  try {
+    const pages = await listDeskTargets(deskId);
+    return pickTargetForProject(pages, { projectUrl, claimedTargetIds });
+  } catch {
+    return null;
+  }
+}
+
+async function ensureParkedMemberSeat(deskId, user, projectUrl) {
+  if (!user?.id || user.role === "admin" || !projectUrl) return null;
+  const existing = seats.ofUser(deskId, user.id);
+  if (existing?.mode === "tab" && existing.targetId && (await targetExists(deskId, existing.targetId))) {
+    return existing;
+  }
+  const claimedTargetIds = seats.list(deskId).map((s) => s.targetId).filter(Boolean);
+  const found = await findParkedProjectTarget(deskId, projectUrl, claimedTargetIds);
+  if (found?.id) {
+    return seats.claim(deskId, user, { mode: "tab", targetId: found.id, projectUrl });
+  }
+  const startUrl = seatStartUrl({ cdp: true, projectUrl });
+  const created = await createParkedChatGPTTab(deskId, { claimedTargetIds, startUrl });
+  return seats.claim(deskId, user, { mode: "tab", targetId: created.targetId, projectUrl });
+}
+
+async function warmDeskMemberSeats(deskId) {
+  if (!users.deskCdpOn(deskId)) return;
+  for (const member of users.assignedMembers(deskId)) {
+    const url = users.projectUrlOn(member.id, deskId);
+    if (!url) continue;
+    try {
+      await ensureParkedMemberSeat(deskId, member, url);
+    } catch (e) {
+      console.error(`warm seat desk=${deskId} user=${member.username}: ${e.message}`);
+    }
+  }
+}
+
+async function warmAllParkedMemberSeats() {
+  for (const id of registry.ids()) {
+    await warmDeskMemberSeats(id);
+  }
+}
+
+async function forgetDeskTabSeats(deskId) {
+  for (const seat of seats.list(deskId).filter((s) => s.mode === "tab")) {
+    seats.release(seat.id);
+    await closeSeatTab(seat).catch(() => {});
+  }
+}
+
+/** Job-only: parked tab, require project-only memory, persist URL. Never used on member open. Keep the window. */
 async function createMemberProject(deskId, user, { skipIfUrl = true, name } = {}) {
   const projectName = String(name || user?.username || "").trim();
   const uid = user?.id;
   if (!projectName || !uid) return { ok: false, error: "没有用户名" };
   if (skipIfUrl) {
     const existing = users.projectUrlOn(uid, deskId);
-    if (existing) return { ok: true, url: existing, skipped: true, memory: "project-only" };
+    if (existing) {
+      try {
+        await ensureParkedMemberSeat(deskId, user, existing);
+      } catch {
+        /* URL is enough for assign; warm retries on boot / next enable */
+      }
+      return { ok: true, url: existing, skipped: true, memory: "project-only" };
+    }
   }
   const claimedTargetIds = seats.list(deskId).map((s) => s.targetId).filter(Boolean);
   let created;
@@ -148,12 +207,17 @@ async function createMemberProject(deskId, user, { skipIfUrl = true, name } = {}
       const resolved = await resolveOnboardUrl(deskId, r, created.targetId);
       accepted = acceptOnboardResult({ ...r, url: resolved || r.url });
     }
-    if (!accepted.ok) return accepted;
+    if (!accepted.ok) {
+      // closeTarget refuses the last/primary page so onboard cannot kill Chromium.
+      await closeTarget(deskId, created.targetId).catch(() => {});
+      return accepted;
+    }
     await rememberProjectUrl(uid, deskId, projectName, accepted.url);
+    seats.claim(deskId, user, { mode: "tab", targetId: created.targetId, projectUrl: accepted.url });
     return { ok: true, url: accepted.url, action: accepted.action, memory: "project-only" };
-  } finally {
-    // closeTarget refuses the last/primary page so onboard cannot kill Chromium.
+  } catch (e) {
     await closeTarget(deskId, created.targetId).catch(() => {});
+    return { ok: false, error: e.message || "无法创建分屏席位，请稍后再试" };
   }
 }
 
@@ -180,7 +244,7 @@ async function applyCdpPort(deskId, on) {
 }
 
 async function enableDeskSplitScreen(deskId) {
-  return runEnableJob({
+  const job = await runEnableJob({
     deskId,
     users,
     occupied: exclusiveOccupied({ seats, presence, deskId }),
@@ -191,6 +255,9 @@ async function enableDeskSplitScreen(deskId) {
     hasSession: () => deskHasChatGPTSession(deskId),
     createProject: (id, member) => createMemberProject(id, member),
   });
+  if (job.ok) await warmDeskMemberSeats(deskId);
+  else await forgetDeskTabSeats(deskId);
+  return job;
 }
 
 async function disableDeskSplitScreen(deskId) {
@@ -209,19 +276,10 @@ async function disableDeskSplitScreen(deskId) {
   return { ok: true, cdp: false };
 }
 
-function kickOnboard(id, user, targetId) {
-  const name = String(user.username || "").trim();
-  if (!name) return;
-  const t = setTimeout(() => {
-    lockSeatToProject(id, user, targetId).catch(() => {});
-  }, ONBOARD_YIELD_MS);
-  t.unref?.();
-}
-
 async function closeSeatTab(seat) {
   if (seat?.id) jails.stop(seat.id);
   if (seat?.mode === "tab" && seat.targetId) {
-    await closeTarget(seat.deskId, seat.targetId).catch(() => {});
+    await withDeadline(closeTarget(seat.deskId, seat.targetId), CLOSE_SEAT_MS, "关闭分屏窗口超时").catch(() => {});
   }
 }
 
@@ -347,6 +405,14 @@ const PANEL_CSP = [
   "form-action 'self'",
 ].join("; ");
 
+function assetQuery(name) {
+  try {
+    return `v=${Math.floor(statSync(join(WEB, name)).mtimeMs)}`;
+  } catch {
+    return "v=1";
+  }
+}
+
 function serveStatic(res, pathname) {
   const file = pathname === "/" ? "index.html" : pathname.slice(1);
   const full = join(WEB, file);
@@ -354,14 +420,24 @@ function serveStatic(res, pathname) {
   const types = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
   const headers = {
     "content-type": types[extname(full)] || "application/octet-stream",
-    "cache-control": "no-store",
+    "cache-control": "no-store, no-cache, must-revalidate",
+    pragma: "no-cache",
     "permissions-policy": "clipboard-read=*, clipboard-write=*",
     "x-content-type-options": "nosniff",
     "referrer-policy": "same-origin",
   };
   if (extname(full) === ".html" || pathname === "/") headers["content-security-policy"] = PANEL_CSP;
+  let body = readFileSync(full);
+  if (file === "index.html") {
+    body = Buffer.from(
+      body
+        .toString("utf8")
+        .replace(/href="\/app\.css[^"]*"/, `href="/app.css?${assetQuery("app.css")}"`)
+        .replace(/src="\/app\.js[^"]*"/, `src="/app.js?${assetQuery("app.js")}"`),
+    );
+  }
   res.writeHead(200, headers);
-  res.end(readFileSync(full));
+  res.end(body);
   return true;
 }
 
@@ -454,17 +530,21 @@ async function handleApi(req, res, url, sess) {
     if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
     const id = rename[1];
     try {
+      const leftovers = [];
       for (const v of presence.list(id)) {
-        if (v.id) kickLiveSession({ sessions, presence, sockets: liveSockets, seats }, v.id);
+        if (!v.id) continue;
+        const dropped = kickLiveSession({ sessions, presence, sockets: liveSockets, seats }, v.id);
+        leftovers.push(...(dropped.released || []));
       }
-      const parked = seats.releaseDesk(id);
-      await Promise.all(parked.map((s) => closeSeatTab(s)));
+      leftovers.push(...seats.releaseDesk(id));
+      await Promise.all(leftovers.map((s) => closeSeatTab(s)));
       presence.clear(id);
       const desk = await retireDesk({
         users,
         registry,
         id,
-        remove: (deskId) => removeDeskContainer(deskId, docker),
+        remove: (deskId) =>
+          withDeadline(removeDeskContainer(deskId, docker), DOCKER_DELETE_MS, "拆除账号容器超时，请稍后重试"),
       });
       console.log(`desk removed id=${desk.id} by=${sess.user.username} ip=${clientIp(req)}`);
       return json(res, 200, { ok: true, desk });
@@ -590,33 +670,44 @@ async function handleApi(req, res, url, sess) {
       seat = decision.seat || seats.ofUser(id, sess.user.id);
       if (seat?.mode === "tab") {
         const alive = await targetExists(id, seat.targetId);
-        if (!alive) {
-          try {
-            const created = await createParkedChatGPTTab(id, { claimedTargetIds, startUrl });
-            seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId, projectUrl });
-          } catch (e) {
-            return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
-          }
-        } else {
+        if (alive) {
           seats.claim(id, sess.user, { projectUrl });
           seats.beat(seat.id);
           reused = true;
+        } else {
+          try {
+            const found = await findParkedProjectTarget(id, projectUrl, claimedTargetIds);
+            if (found?.id) {
+              seat = seats.claim(id, sess.user, { mode: "tab", targetId: found.id, projectUrl });
+              reused = true;
+            } else {
+              const created = await createParkedChatGPTTab(id, { claimedTargetIds, startUrl });
+              seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId, projectUrl });
+            }
+          } catch (e) {
+            return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
+          }
         }
       } else {
         seats.beat(seat.id);
       }
     } else if (decision.mode === "tab") {
-      let created;
       try {
-        created = await createParkedChatGPTTab(id, { claimedTargetIds, startUrl });
+        const found = await findParkedProjectTarget(id, projectUrl, claimedTargetIds);
+        if (found?.id) {
+          seat = seats.claim(id, sess.user, { mode: "tab", targetId: found.id, projectUrl });
+          reused = true;
+        } else {
+          const created = await createParkedChatGPTTab(id, { claimedTargetIds, startUrl });
+          try {
+            seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId, projectUrl });
+          } catch (e) {
+            await closeTarget(id, created.targetId).catch(() => {});
+            return json(res, e.status || 409, { error: e.message, cap: seats.cap });
+          }
+        }
       } catch (e) {
         return json(res, 502, { error: e.message || "无法创建分屏席位，请稍后再试" });
-      }
-      try {
-        seat = seats.claim(id, sess.user, { mode: "tab", targetId: created.targetId, projectUrl });
-      } catch (e) {
-        await closeTarget(id, created.targetId).catch(() => {});
-        return json(res, e.status || 409, { error: e.message, cap: seats.cap });
       }
     } else {
       seat = seats.claim(id, sess.user, { mode: "vnc" });
@@ -624,7 +715,6 @@ async function handleApi(req, res, url, sess) {
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
     if (cdp && sess.user.role !== "admin" && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
-    if (cdp && sess.user.role !== "admin" && !reused) kickOnboard(id, sess.user, seat?.targetId);
     return json(res, 200, { ok: true, id, mode: seat.mode, seat: publicSeat(seat), cap: seats.cap, ...seatOpenFlags({ mode: seat.mode, reused }) });
   }
   const paste = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/paste$/);
@@ -844,15 +934,20 @@ async function handleApi(req, res, url, sess) {
   }
   if (one && req.method === "DELETE") {
     if (sess.user.role !== "admin") return json(res, 403, { error: "没有权限" });
+    const uid = one[1];
     try {
-      users.remove(one[1]);
-      sessions.deleteByUser(one[1]);
-      presence.leaveAll(one[1]);
-      await releaseUserSeats(one[1]);
-      return json(res, 200, { ok: true });
-    } catch (e) {
-      return json(res, 400, { error: e.message });
+      await releaseUserSeats(uid);
+    } catch {
+      /* still remove the account */
     }
+    presence.leaveAll(uid);
+    sessions.deleteByUser(uid);
+    try {
+      users.remove(uid);
+    } catch (e) {
+      return json(res, e.status || 400, { error: e.message || "未能移除成员" });
+    }
+    return json(res, 200, { ok: true });
   }
   return json(res, 404, { error: "not found" });
 }
@@ -972,5 +1067,7 @@ setInterval(() => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`gateway on :${PORT} desks=${registry.ids().join(",")} tabSeats=${seats.cap}`);
-  reconcileExtraDesks();
+  reconcileExtraDesks()
+    .then(() => warmAllParkedMemberSeats())
+    .catch((e) => console.error(`warm seats: ${e.message}`));
 });

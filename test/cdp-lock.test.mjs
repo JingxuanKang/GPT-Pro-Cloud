@@ -96,7 +96,7 @@ describe("CDP off — settings UI", () => {
 });
 
 describe("CDP off — share / jail / onboard stay gated", () => {
-  it("does not arm jail, kickOnboard, share, or page-assist unless cdp is on", () => {
+  it("does not arm jail, share, or page-assist unless cdp is on", () => {
     const gw = readFileSync(resolve(root, "gateway/server.mjs"), "utf8");
     const ui = readFileSync(resolve(root, "gateway/web/app.js"), "utf8");
     const openStart = gw.indexOf("const open = url.pathname.match(/^\\/api\\/desks\\/([a-z0-9-]+)\\/open$/)");
@@ -104,8 +104,7 @@ describe("CDP off — share / jail / onboard stay gated", () => {
     assert.match(openBlock, /const cdp = users\.deskCdpOn\(id\)/);
     assert.equal([...openBlock.matchAll(/armSeatProjectJail\(/g)].length, 1);
     assert.match(openBlock, /if \(cdp && sess\.user\.role !== "admin" && projectUrl\) armSeatProjectJail/);
-    assert.equal([...openBlock.matchAll(/kickOnboard\(/g)].length, 1);
-    assert.match(openBlock, /if \(cdp && sess\.user\.role !== "admin" && !reused\) kickOnboard/);
+    assert.doesNotMatch(openBlock, /kickOnboard/);
     assert.match(gw, /if \(!users\.deskCdpOn\(id\)\) return json\(res, 403/);
     assert.match(ui, /deskCdpOn\(state\.deskId\) \? `<button type="button" class="chrome-btn" id="share-chat"/);
     assert.match(ui, /if \(deskCdpOn\(state\.deskId\) && state\.me\?\.role !== "admin" && state\.deskMode === "tab"\) ensureWorkspace\(\)/);
