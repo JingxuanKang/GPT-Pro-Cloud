@@ -83,8 +83,9 @@ describe("CDP off — settings UI", () => {
     const ui = readFileSync(resolve(root, "gateway/web/app.js"), "utf8");
     const settingsStart = ui.indexOf("function renderSettings");
     const settingsBlock = ui.slice(settingsStart, ui.indexOf("const isMac", settingsStart));
+    const cdpRowsTpl = settingsBlock.slice(settingsBlock.indexOf("const cdpRows"), settingsBlock.indexOf("return shell"));
+    assert.match(cdpRowsTpl, /data-cdp-toggle/);
     const panel = settingsBlock.slice(settingsBlock.indexOf("<b>多人分屏</b>"), settingsBlock.indexOf("<b>复制粘贴</b>"));
-    assert.match(panel, /data-cdp-toggle/);
     assert.match(panel, /class="cdp-rows"|cdp-empty/);
     assert.doesNotMatch(panel, /多人分屏暂未开放/);
     assert.match(ui, /data-cdp-toggle/);

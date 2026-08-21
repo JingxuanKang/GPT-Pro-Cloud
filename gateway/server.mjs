@@ -191,6 +191,7 @@ async function enableDeskSplitScreen(deskId) {
 }
 
 async function disableDeskSplitScreen(deskId) {
+  if (!users.deskCdpOn(deskId)) return { ok: true, cdp: false };
   const parked = seats.list(deskId).filter((s) => s.mode === "tab");
   for (const seat of parked) {
     seats.release(seat.id);
