@@ -346,6 +346,9 @@ describe("standalone product", () => {
     assert.match(jail, /shouldApplyProjectHideMark/);
     assert.match(jail, /projectRowForControl/);
     assert.match(jail, /projectJailHideCss/);
+    assert.match(jail, /projectJailProbeExpression/);
+    assert.match(jail, /applyJailCssViaCdp/);
+    assert.match(jail, /shouldReuseSeatJail/);
     assert.match(jail, /shouldHideOtherProject/);
     assert.match(jail, /shouldBlockProjectClick/);
     assert.match(jail, /seatStartUrl/);

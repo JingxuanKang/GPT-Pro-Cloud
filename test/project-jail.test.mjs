@@ -2,13 +2,19 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { CHATGPT_START } from "../lib/cdp.mjs";
 import {
+  applyJailCssViaCdp,
   bounceUrl,
   canonicalizeProjectUrl,
+  createSeatJailRegistry,
   isAllowedJailUrl,
+  JAIL_CSS_ID,
+  markJailProbeExpression,
   projectJailHideCss,
+  projectJailProbeExpression,
   projectRowForControl,
   shouldApplyProjectHideMark,
   shouldEnforceJailReplace,
+  shouldReuseSeatJail,
   isChatGPTProjectPath,
   isDownloadOrAssetUrl,
   isMainFrameNav,
@@ -247,6 +253,23 @@ describe("injected jail script", () => {
     assert.doesNotMatch(src, /setProperty\(\s*["']display["']/);
     assert.doesNotMatch(src, /next !== location\.href/);
     assert.doesNotMatch(src, /\[class\*='project' i\]/);
+  });
+
+  it("re-running for the same home still ensures CSS and the probe, not a no-op", () => {
+    const src = projectJailScript(ADA);
+    assert.match(src, /css:\s*cssReady\(\)/);
+    assert.match(src, /adoptedStyleSheets/);
+    assert.match(src, /ensureCss/);
+    assert.match(src, /already/);
+    assert.match(src, /if \(already\) return window\.__gpcProjectJail/);
+    assert.doesNotMatch(src, /home === .+\) return;/);
+    assert.match(src, new RegExp(JAIL_CSS_ID));
+    const probe = projectJailProbeExpression();
+    assert.match(probe, /__gpcProjectJail/);
+    assert.match(probe, /gpc-project-jail-css/);
+    const mark = markJailProbeExpression(ADA, true);
+    assert.match(mark, /g-p-aaa111-ada/);
+    assert.match(mark, /j\.css = true/);
   });
 });
 
@@ -491,6 +514,50 @@ describe("CDP Page.navigate lock", () => {
     );
   });
 
+  it("applies a CDP stylesheet and re-injects after load so the probe survives a second open", async () => {
+    const calls = [];
+    const listeners = [];
+    const send = async (method, params) => {
+      calls.push({ method, params });
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "f1" } } };
+      if (method === "CSS.createStyleSheet") return { styleSheetId: "ss1" };
+      if (method === "Runtime.evaluate" && params?.expression === "location.href") {
+        return { result: { value: ADA } };
+      }
+      return {};
+    };
+    const jail = await armSeatJail({
+      send,
+      on: (fn) => {
+        listeners.push(fn);
+        return () => {};
+      },
+      sessionId: "s1",
+      homeUrl: ADA,
+      targetId: "t-ada",
+    });
+    assert.equal(jail.armed, true);
+    assert.equal(jail.targetId, "t-ada");
+    assert.equal(typeof jail.refresh, "function");
+    assert.equal(calls.some((c) => c.method === "CSS.enable"), true);
+    assert.equal(calls.some((c) => c.method === "CSS.createStyleSheet" && c.params.frameId === "f1"), true);
+    assert.equal(
+      calls.some((c) => c.method === "CSS.setStyleSheetText" && c.params.styleSheetId === "ss1" && /g-p-aaa111-ada/.test(c.params.text)),
+      true,
+    );
+    assert.equal(
+      calls.some((c) => c.method === "Runtime.evaluate" && /j\.css = true/.test(c.params.expression)),
+      true,
+    );
+    const before = calls.filter((c) => c.method === "Runtime.evaluate").length;
+    listeners[0]({ method: "Page.loadEventFired", sessionId: "s1" });
+    await Promise.resolve();
+    assert.ok(calls.filter((c) => c.method === "Runtime.evaluate").length > before);
+    const afterLoad = calls.filter((c) => c.method === "Runtime.evaluate").length;
+    await jail.refresh();
+    assert.ok(calls.filter((c) => c.method === "Runtime.evaluate").length > afterLoad);
+  });
+
   it("still arms the escape lock without a project URL, and stays off without send", async () => {
     const calls = [];
     const jail = await armSeatJail({
@@ -508,5 +575,54 @@ describe("CDP Page.navigate lock", () => {
     assert.equal(calls.some((c) => c.method === "Page.addScriptToEvaluateOnNewDocument"), true);
     const off = await armSeatJail({ homeUrl: ADA });
     assert.equal(off.armed, false);
+  });
+});
+
+describe("jail CSS via CDP and seat re-arm", () => {
+  it("writes hide CSS through CSS.setStyleSheetText when a frame id exists", async () => {
+    const calls = [];
+    const send = async (method, params) => {
+      calls.push({ method, params });
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "f9" } } };
+      if (method === "CSS.createStyleSheet") return { styleSheetId: "sheet-9" };
+      return {};
+    };
+    const css = projectJailHideCss(ADA);
+    const out = await applyJailCssViaCdp(send, "s1", css);
+    assert.equal(out.ok, true);
+    assert.equal(out.styleSheetId, "sheet-9");
+    assert.equal(calls.some((c) => c.method === "CSS.setStyleSheetText" && c.params.styleSheetId === "sheet-9"), true);
+    const missing = await applyJailCssViaCdp(async () => ({}), "s1", css);
+    assert.equal(missing.ok, false);
+  });
+
+  it("reuses a jail only for the same seat target, and refreshes instead of no-op", async () => {
+    const seat = { id: "seat-1", deskId: "a", targetId: "t-ada" };
+    assert.equal(shouldReuseSeatJail({ home: ADA, targetId: "t-ada", refresh: async () => {} }, seat, ADA), true);
+    assert.equal(shouldReuseSeatJail({ home: ADA, targetId: "t-old", refresh: async () => {} }, seat, ADA), false);
+    assert.equal(shouldReuseSeatJail({ home: ADA, targetId: "t-ada" }, seat, ADA), false);
+
+    const starts = [];
+    const refreshes = [];
+    const registry = createSeatJailRegistry();
+    const start = async (deskId, targetId, home) => {
+      starts.push({ deskId, targetId, home });
+      return {
+        armed: true,
+        home,
+        targetId,
+        refresh: async () => {
+          refreshes.push(targetId);
+        },
+        dispose() {},
+      };
+    };
+    await registry.arm(seat, ADA, start);
+    await registry.arm(seat, ADA, start);
+    assert.equal(starts.length, 1);
+    assert.deepEqual(refreshes, ["t-ada"]);
+    await registry.arm({ ...seat, targetId: "t-ada-2" }, ADA, start);
+    assert.equal(starts.length, 2);
+    assert.equal(starts[1].targetId, "t-ada-2");
   });
 });
