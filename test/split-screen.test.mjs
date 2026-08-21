@@ -10,6 +10,7 @@ import {
   ENABLE_OCCUPIED,
   EXISTING_DEFAULT_MEMORY,
   PROJECT_ONLY_REQUIRED,
+  SESSION_UNKNOWN,
   WORKSPACE_NOT_READY,
   acceptOnboardResult,
   assignDesksWithProjects,
@@ -118,6 +119,61 @@ describe("enable job", () => {
       },
     });
     assert.equal(names.includes("admin"), false);
+  });
+
+  it("retries a null session probe until ChatGPT is known logged in", async () => {
+    const users = store();
+    let n = 0;
+    const r = await runEnableJob({
+      deskId: "a",
+      users,
+      occupied: false,
+      applyCdp: async () => {},
+      persistCdp: (on) => users.setDeskCdp("a", on),
+      hasSession: async () => {
+        n += 1;
+        if (n < 3) return null;
+        return true;
+      },
+      createProject: async () => ({ ok: true, url: ADA, memory: "project-only" }),
+      sessionProbeTimeoutMs: 1000,
+      sessionProbeIntervalMs: 1,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.cdp, true);
+    assert.equal(n, 3);
+    assert.equal(users.deskCdpOn("a"), true);
+  });
+
+  it("returns SESSION_UNKNOWN after the probe stays unknown past the timeout", async () => {
+    const users = store();
+    let now = 0;
+    let calls = 0;
+    const apply = [];
+    const r = await runEnableJob({
+      deskId: "a",
+      users,
+      occupied: false,
+      applyCdp: async (on) => apply.push(on),
+      persistCdp: (on) => users.setDeskCdp("a", on),
+      hasSession: async () => {
+        calls += 1;
+        return null;
+      },
+      createProject: async () => ({ ok: true, url: ADA, memory: "project-only" }),
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+      sessionProbeTimeoutMs: 50,
+      sessionProbeIntervalMs: 10,
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 502);
+    assert.equal(r.error, SESSION_UNKNOWN);
+    assert.ok(calls >= 2);
+    assert.equal(users.deskCdpOn("a"), false);
+    assert.deepEqual(apply, [true, false]);
   });
 
   it("refuses to enable while exclusive VNC is occupied", async () => {

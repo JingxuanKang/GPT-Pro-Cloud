@@ -117,6 +117,8 @@ describe("standalone product", () => {
     assert.match(gw, /claimedTargetIds/);
     assert.match(gw, /deskHasChatGPTSession/);
     assert.match(gw, /runEnableJob/);
+    assert.match(gw, /waitForDebugger/);
+    assert.match(gw, /waitForDesk\(id, 45_000\)/);
     assert.match(gw, /createMemberProject/);
     assert.match(gw, /lockMemberToStoredProject/);
     assert.match(gw, /该账号尚未登录 ChatGPT/);

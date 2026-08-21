@@ -185,6 +185,7 @@ async function enableDeskSplitScreen(deskId) {
     alreadyOn: users.deskCdpOn(deskId),
     applyCdp: (on) => applyCdpPort(deskId, on),
     persistCdp: (on) => users.setDeskCdp(deskId, on),
+    waitForDebugger: (id) => waitForDesk(id, 45_000),
     hasSession: () => deskHasChatGPTSession(deskId),
     createProject: (id, member) => createMemberProject(id, member),
   });
