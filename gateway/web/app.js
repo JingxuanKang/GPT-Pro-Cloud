@@ -420,17 +420,19 @@ function renderSettings() {
       </div>`,
     )
     .join("");
-  const cdpRows = state.desks
-    .map(
-      (d) => `<label class="switch-row">
+  const cdpRows = state.desks.length
+    ? state.desks
+        .map(
+          (d) => `<label class="switch-row">
         <span>
           <b>${esc(d.name)}</b>
           <em>允许多人同时使用 / 开启调试口</em>
         </span>
         <input type="checkbox" data-cdp-toggle="${esc(d.id)}" ${d.cdp ? "checked" : ""}>
       </label>`,
-    )
-    .join("");
+        )
+        .join("")
+    : `<p class="cdp-empty">还没有账号，先去<a href="#/admin">管理</a>页加一个</p>`;
   return shell(`<div class="narrow">
     <header class="page-head">
       <h1 class="display">设置</h1>
@@ -441,6 +443,7 @@ function renderSettings() {
         <b>多人分屏</b>
         <em>默认关闭。开启后网关会连浏览器调试口；每人都是独立标签，不再有「第一人看整桌」。单人使用请保持关闭。</em>
       </div>
+      <div class="cdp-rows">${cdpRows}</div>
       <div class="assist-note">
         <b>开启后一并提供</b>
         <p><b>分屏席位</b> — 开启多人后每人都是独立标签（含第一人），不再有人看整张桌面。每人只看到自己的 ChatGPT 标签。</p>
@@ -449,7 +452,6 @@ function renderSettings() {
         <p><b>分享</b> — 顶栏多一个「分享」按钮，链接直接到手。关闭时自己在页面里点 Share，链接经剪贴板落到本机。</p>
         <p>切换会短暂断开当前画面；ChatGPT 登录状态留在本机 profile 里，不会因为开关调试口而掉登录。</p>
       </div>
-      <div class="cdp-rows">${cdpRows}</div>
     </section>
     <section class="panel">
       <div class="panel-head">

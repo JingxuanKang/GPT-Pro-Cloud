@@ -545,6 +545,15 @@ button.chip:hover { border-color: var(--ink); color: var(--ink); background: var
 }
 .assist-note p b { color: var(--ink); font-weight: 600; }
 .cdp-rows .switch-row { border-top: 1px solid var(--hairline); }
+.cdp-empty {
+  margin: 0;
+  padding: 16px 20px 18px;
+  border-top: 1px solid var(--hairline);
+  color: var(--mute);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.cdp-empty a { color: var(--ink); font-weight: 500; }
 
 .panel-head { padding: 18px 20px 4px; }
 .panel-head b { display: block; font-size: 14.5px; font-weight: 600; }
