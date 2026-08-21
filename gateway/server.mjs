@@ -405,6 +405,7 @@ async function handleApi(req, res, url, sess) {
     if (!registry.has(rename[1])) return json(res, 404, { error: "账号不存在" });
     try {
       const body = await readBody(req);
+      if (body && "cdp" in body && body.cdp) return json(res, 400, { error: "多人分屏暂未开放" });
       const out = { ok: true };
       if ("name" in body) out.name = users.renameDesk(rename[1], body.name) || registry.get(rename[1]).name;
       if ("proxy" in body) {
@@ -416,16 +417,7 @@ async function handleApi(req, res, url, sess) {
         }
         out.proxy = proxy;
       }
-      if ("cdp" in body) {
-        const cdp = users.setDeskCdp(rename[1], !!body.cdp);
-        try {
-          await applyDeskCdpLive(rename[1], cdp);
-        } catch {
-          return json(res, 502, { error: "已保存，但账号容器暂时不可达，重启该容器后生效" });
-        }
-        forgetDeskBrowser(rename[1]);
-        out.cdp = cdp;
-      }
+      if ("cdp" in body) out.cdp = users.setDeskCdp(rename[1], false);
       return json(res, 200, out);
     } catch (e) {
       return json(res, 400, { error: e.message });

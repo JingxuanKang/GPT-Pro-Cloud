@@ -1,7 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -192,9 +192,93 @@ describe("presence + kick API", { concurrency: 1 }, () => {
     assert.match(onboard.data.error || "", /调试口|多人/);
 
     const saved = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: true } });
-    assert.ok(saved.status === 200 || saved.status === 502);
+    assert.equal(saved.status, 400);
+    assert.match(saved.data.error || "", /多人分屏暂未开放/);
     const after = await req(base, "/api/desks", { cookie: adminCookie });
-    assert.equal(after.data.desks.find((d) => d.id === "a").cdp, true);
+    assert.equal(after.data.desks.find((d) => d.id === "a").cdp, false);
     assert.equal(after.data.desks.find((d) => d.id === "b").cdp, false);
+
+    const off = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: false } });
+    assert.equal(off.status, 200);
+    assert.equal(off.data.cdp, false);
+  });
+});
+
+describe("CDP lock ignores stored deskCdp=true", { concurrency: 1 }, () => {
+  let child;
+  let base;
+  let adminCookie;
+  let usersFile;
+
+  before(async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gpc-cdp-lock-"));
+    usersFile = join(dir, "users.json");
+    writeFileSync(
+      usersFile,
+      JSON.stringify({
+        users: [],
+        deskCdp: { a: true, b: true },
+      }),
+    );
+    const port = 18000 + Math.floor(Math.random() * 2000);
+    child = spawn(process.execPath, [join(root, "gateway/server.mjs")], {
+      cwd: root,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        AUTH_USER: "admin",
+        AUTH_PASSWORD: "admin-secret",
+        USERS_FILE: usersFile,
+        INSTANCES: "a,b",
+        DOCKER_SOCKET: join(dir, "no-docker.sock"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      await waitForLog(child, /gateway on/);
+    } catch (err) {
+      child.kill("SIGTERM");
+      throw err;
+    }
+    base = `http://127.0.0.1:${port}`;
+    const login = await req(base, "/api/login", { method: "POST", body: { username: "admin", password: "admin-secret" } });
+    assert.equal(login.status, 200);
+    adminCookie = login.cookie;
+  });
+
+  after(() => {
+    if (child && !child.killed) child.kill("SIGTERM");
+  });
+
+  it("opens exclusive VNC, rejects a second occupant, and rejects enable", async () => {
+    const stored = JSON.parse(readFileSync(usersFile, "utf8"));
+    assert.equal(stored.deskCdp.a, true);
+
+    const list = await req(base, "/api/desks", { cookie: adminCookie });
+    assert.equal(list.status, 200);
+    assert.equal(list.data.desks.find((d) => d.id === "a").cdp, false);
+
+    const first = await req(base, "/api/desks/a/open", { method: "POST", cookie: adminCookie });
+    assert.equal(first.status, 200);
+    assert.equal(first.data.mode, "vnc");
+
+    const created = await req(base, "/api/admin/users", {
+      method: "POST",
+      cookie: adminCookie,
+      body: { username: "ada", password: "secret6", desks: ["a"] },
+    });
+    assert.equal(created.status, 200);
+    const ada = await req(base, "/api/login", { method: "POST", body: { username: "ada", password: "secret6" } });
+    assert.equal(ada.status, 200);
+    const second = await req(base, "/api/desks/a/open", { method: "POST", cookie: ada.cookie });
+    assert.equal(second.status, 409);
+    assert.match(second.data.error || "", /未开多人分屏/);
+    assert.equal(second.data.code, "CDP_OFF");
+
+    const saved = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: true } });
+    assert.equal(saved.status, 400);
+    assert.match(saved.data.error || "", /多人分屏暂未开放/);
+    const after = JSON.parse(readFileSync(usersFile, "utf8"));
+    assert.equal(after.deskCdp.a, true);
   });
 });
