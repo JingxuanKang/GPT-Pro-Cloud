@@ -181,7 +181,7 @@ describe("presence + kick API", { concurrency: 1 }, () => {
     assert.equal(cyd.status, 200);
     const second = await req(base, "/api/desks/a/open", { method: "POST", cookie: cyd.cookie });
     assert.equal(second.status, 409);
-    assert.match(second.data.error || "", /未开多人分屏/);
+    assert.equal(second.data.error, "有人在使用");
     assert.equal(second.data.code, "CDP_OFF");
 
     const share = await req(base, "/api/desks/a/share", { method: "POST", cookie: ada.cookie });
@@ -272,7 +272,7 @@ describe("CDP lock ignores stored deskCdp=true", { concurrency: 1 }, () => {
     assert.equal(ada.status, 200);
     const second = await req(base, "/api/desks/a/open", { method: "POST", cookie: ada.cookie });
     assert.equal(second.status, 409);
-    assert.match(second.data.error || "", /未开多人分屏/);
+    assert.equal(second.data.error, "有人在使用");
     assert.equal(second.data.code, "CDP_OFF");
 
     const saved = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: true } });

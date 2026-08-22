@@ -295,6 +295,8 @@ describe("standalone product", () => {
     const seats = readFileSync(resolve(root, "lib/seats.mjs"), "utf8");
     assert.match(seats, /DEFAULT_TAB_SEAT_CAP/);
     assert.match(seats, /targetsVisibleToSeat/);
+    assert.match(seats, /有人在使用/);
+    assert.doesNotMatch(seats, /请管理员开启/);
     const gwPkg = readFileSync(resolve(root, "gateway/package.json"), "utf8");
     assert.match(gwPkg, /"ws"/);
     const readme = readFileSync(resolve(root, "README.md"), "utf8");
