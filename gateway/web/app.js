@@ -31,8 +31,8 @@ async function api(path, opts = {}) {
 
 const state = { me: null, desks: [], presence: {}, users: [], settings: {}, proxyPresets: [], view: "home", deskId: null, deskMode: "vnc", seatId: null, entering: false, reused: false, err: "", modal: false, manage: null, rename: null, create: false, assign: null, resetPw: null, selfPw: false, seatCap: 3, setup: false, boot: true };
 
-function deskCdpOn(id) {
-  return !!state.desks.find((d) => d.id === id)?.cdp;
+function deskCdpOn(_id) {
+  return false;
 }
 
 function route() {
@@ -430,14 +430,6 @@ function renderSettings() {
       </div>`,
     )
     .join("");
-  const cdpRows = (state.desks || [])
-    .map(
-      (d) => `<label class="switch-row">
-        <span><b>${esc(d.name)}</b></span>
-        <input type="checkbox" data-cdp-toggle="${esc(d.id)}" ${d.cdp ? "checked" : ""}>
-      </label>`,
-    )
-    .join("");
   return shell(`<div class="narrow">
     <header class="page-head">
       <h1 class="display">设置</h1>
@@ -446,9 +438,8 @@ function renderSettings() {
     <section class="panel">
       <div class="panel-head">
         <b>多人分屏</b>
-        <em>每个账号单独开。开了才能几个人同时用这个号。</em>
+        <em>多人分屏暂未开放。每个账号同时只允许一人进入，走独占桌面。</em>
       </div>
-      ${cdpRows ? `<div class="cdp-rows">${cdpRows}</div>` : `<div class="cdp-empty">还没有账号。<a href="#/admin">到管理添加</a></div>`}
     </section>
     <section class="panel">
       <div class="panel-head">
@@ -1758,31 +1749,6 @@ function bind() {
         $("#selfpw-err").textContent = err.message;
       }
     };
-  document.querySelectorAll("[data-cdp-toggle]").forEach((el) => {
-    el.onchange = async () => {
-      const id = el.getAttribute("data-cdp-toggle");
-      const desk = state.desks.find((d) => d.id === id);
-      const name = desk?.name || "这个账号";
-      if (!confirm(`切换「${name}」会短暂断开当前画面，ChatGPT 登录状态会保留。确定？`)) {
-        el.checked = !!desk?.cdp;
-        return;
-      }
-      el.disabled = true;
-      try {
-        if (el.checked) toast("正在准备多人分屏…");
-        await api(`/api/admin/desks/${id}`, { method: "PATCH", body: { cdp: el.checked } });
-        toast(el.checked ? "已开启多人分屏" : "已关闭多人分屏，仅单人使用");
-        await refresh();
-      } catch (err) {
-        toast(err.message || "没能保存");
-        if (String(err.message || "").includes("已保存")) await refresh();
-        else {
-          el.checked = !!desk?.cdp;
-          el.disabled = false;
-        }
-      }
-    };
-  });
 }
 
 async function onLogin(e) {

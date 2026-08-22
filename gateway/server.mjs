@@ -255,69 +255,32 @@ async function applyCdpPort(deskId, on) {
   forgetDeskBrowser(deskId);
 }
 
-async function enableDeskSplitScreen(deskId) {
-  // Enable still returns 该账号尚未登录 ChatGPT; member /open must not wait on that probe.
-  const job = await runEnableJob({
-    deskId,
-    users,
-    occupied: exclusiveOccupied({ seats, presence, deskId }),
-    alreadyOn: users.deskCdpOn(deskId),
-    applyCdp: (on) => applyCdpPort(deskId, on),
-    persistCdp: (on) => users.setDeskCdp(deskId, on),
-    waitForDebugger: (id) => waitForDesk(id, 45_000),
-    hasSession: () => deskHasChatGPTSession(deskId),
-    createProject: (id, member) => createMemberProject(id, member),
-  });
-  if (job.ok) {
-    await relaxDeskWindowManager(deskId, { docker }).catch(() => {});
-    await warmDeskMemberSeats(deskId);
-  } else await forgetDeskTabSeats(deskId);
-  return job;
+async function enableDeskSplitScreen(_deskId) {
+  return { ok: false, status: 409, error: "多人分屏暂未开放", code: "SPLIT_SCREEN_DISABLED", cdp: false };
 }
 
 async function disableDeskSplitScreen(deskId) {
-  if (!users.deskCdpOn(deskId)) return { ok: true, cdp: false };
-  const parked = seats.list(deskId).filter((s) => s.mode === "tab");
-  for (const seat of parked) {
-    seats.release(seat.id);
-    await closeSeatTab(seat).catch(() => {});
-  }
-  users.setDeskCdp(deskId, false);
   try {
-    await applyCdpPort(deskId, false);
+    users.setDeskCdp(deskId, false);
   } catch {
-    return { ok: false, status: 502, error: DESK_UNREACHABLE, cdp: false };
+    /* already off */
   }
   return { ok: true, cdp: false };
 }
 
-async function closeSeatTab(seat) {
+function closeSeatTab(seat) {
   if (seat?.id) jails.stop(seat.id);
-  if (seat?.mode === "tab" && seat.targetId) {
-    await withDeadline(closeTarget(seat.deskId, seat.targetId), CLOSE_SEAT_MS, "关闭分屏窗口超时").catch(() => {});
-  }
 }
 
 async function releaseUserSeats(userId) {
   stopAdminFileWatch(userId);
   const released = seats.releaseByUser(userId);
-  await Promise.all(released.map((s) => closeSeatTab(s)));
+  released.forEach(closeSeatTab);
   return released;
 }
 
 async function parkUserSeatWindows(userId) {
-  stopAdminFileWatch(userId);
-  const held = seats.ofUserAll(userId);
-  const parked = [];
-  for (const seat of held) {
-    if (seat.mode === "tab" && seat.targetId) {
-      await parkSeatTarget(seat.deskId, seat.targetId).catch(() => {});
-      parked.push(seat);
-    } else {
-      seats.release(seat.id);
-    }
-  }
-  return parked;
+  return releaseUserSeats(userId);
 }
 
 function stopAdminFileWatch(userId) {
@@ -445,7 +408,7 @@ async function closeUnassignedSeatTabs(userId, prevDesks, nextDesks) {
     const seat = seats.ofUser(deskId, userId);
     if (!seat) continue;
     seats.release(seat.id);
-    await closeSeatTab(seat).catch(() => {});
+    closeSeatTab(seat);
   }
 }
 
@@ -674,7 +637,7 @@ async function handleApi(req, res, url, sess) {
         leftovers.push(...(dropped.released || []));
       }
       leftovers.push(...seats.releaseDesk(id));
-      await Promise.all(leftovers.map((s) => closeSeatTab(s)));
+      leftovers.forEach(closeSeatTab);
       presence.clear(id);
       const desk = await retireDesk({
         users,
@@ -707,15 +670,12 @@ async function handleApi(req, res, url, sess) {
       }
       if ("cdp" in body) {
         const want = !!body.cdp;
-        if (!want) {
-          const off = await disableDeskSplitScreen(rename[1]);
-          if (!off.ok) return json(res, off.status || 502, { error: off.error });
-          out.cdp = false;
-        } else {
-          const job = await enableDeskSplitScreen(rename[1]);
-          if (!job.ok) return json(res, job.status || 400, { error: job.error, cdp: false });
-          out.cdp = true;
+        if (want) {
+          return json(res, 409, { error: "多人分屏暂未开放", code: "SPLIT_SCREEN_DISABLED", cdp: false });
         }
+        const off = await disableDeskSplitScreen(rename[1]);
+        if (!off.ok) return json(res, off.status || 502, { error: off.error });
+        out.cdp = false;
       }
       return json(res, 200, out);
     } catch (e) {
@@ -761,7 +721,7 @@ async function handleApi(req, res, url, sess) {
     return json(res, 200, { viewers: presence.beat(deskId, sess.user), seat: publicSeat(seat) });
   }
   if (url.pathname === "/api/presence/leave" && req.method === "POST") {
-    await parkUserSeatWindows(sess.user.id);
+    await releaseUserSeats(sess.user.id);
     presence.leaveAll(sess.user.id);
     return json(res, 200, { ok: true, presence: presence.all() });
   }
@@ -1037,7 +997,7 @@ async function handleApi(req, res, url, sess) {
     const user = users.get(kick[1]);
     if (!user) return json(res, 404, { error: "用户不存在" });
     const dropped = kickLiveSession({ sessions, presence, sockets: liveSockets, seats }, kick[1]);
-    await Promise.all((dropped.released || []).map((s) => closeSeatTab(s)));
+    (dropped.released || []).forEach(closeSeatTab);
     console.log(`kick user=${user.username} by=${sess.user.username} sessions=${dropped.sessions} sockets=${dropped.sockets} ip=${clientIp(req)}`);
     return json(res, 200, { ok: true, user, ...dropped, presence: presence.all() });
   }
@@ -1219,7 +1179,5 @@ setInterval(() => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`gateway on :${PORT} desks=${registry.ids().join(",")} tabSeats=${seats.cap}`);
-  reconcileExtraDesks()
-    .then(() => warmAllParkedMemberSeats())
-    .catch((e) => console.error(`warm seats: ${e.message}`));
+  reconcileExtraDesks().catch((e) => console.error(`extra desks: ${e.message}`));
 });

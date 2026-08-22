@@ -79,19 +79,17 @@ describe("CDP off — exclusive VNC decision", () => {
 });
 
 describe("CDP off — settings UI", () => {
-  it("shows a per-desk switch and reads the stored flag", () => {
+  it("shows 多人分屏暂未开放 and has no working toggle", () => {
     const ui = readFileSync(resolve(root, "gateway/web/app.js"), "utf8");
     const settingsStart = ui.indexOf("function renderSettings");
     const settingsBlock = ui.slice(settingsStart, ui.indexOf("const isMac", settingsStart));
-    const cdpRowsTpl = settingsBlock.slice(settingsBlock.indexOf("const cdpRows"), settingsBlock.indexOf("return shell"));
-    assert.match(cdpRowsTpl, /data-cdp-toggle/);
     const panel = settingsBlock.slice(settingsBlock.indexOf("<b>多人分屏</b>"), settingsBlock.indexOf("<b>复制粘贴</b>"));
-    assert.match(panel, /class="cdp-rows"|cdp-empty/);
-    assert.doesNotMatch(panel, /多人分屏暂未开放/);
-    assert.match(ui, /data-cdp-toggle/);
+    assert.match(panel, /多人分屏暂未开放/);
+    assert.doesNotMatch(panel, /data-cdp-toggle/);
+    assert.doesNotMatch(ui, /data-cdp-toggle/);
     const deskCdpOnFn = ui.slice(ui.indexOf("function deskCdpOn"), ui.indexOf("function route"));
-    assert.match(deskCdpOnFn, /state\.desks/);
-    assert.doesNotMatch(deskCdpOnFn, /return false/);
+    assert.match(deskCdpOnFn, /return false/);
+    assert.doesNotMatch(deskCdpOnFn, /state\.desks/);
   });
 });
 
@@ -112,7 +110,7 @@ describe("CDP off — share / jail / onboard stay gated", () => {
     assert.match(ui, /deskCdpOn\(state\.deskId\) \? `<button type="button" class="chrome-btn" id="share-chat"/);
     assert.match(ui, /if \(deskCdpOn\(state\.deskId\) && state\.me\?\.role !== "admin" && state\.deskMode === "tab"\) ensureWorkspace\(\)/);
     const deskCdpOnFn = ui.slice(ui.indexOf("function deskCdpOn"), ui.indexOf("function route"));
-    assert.match(deskCdpOnFn, /state\.desks/);
+    assert.match(deskCdpOnFn, /return false/);
   });
 });
 
@@ -181,7 +179,7 @@ describe("CDP off — gateway with split-screen disabled", { concurrency: 1 }, (
     assert.equal(list.data.desks.find((d) => d.id === "b").cdp, false);
   });
 
-  it("honors a stored deskCdp=true flag after reload", async () => {
+  it("ignores a stored deskCdp=true flag after reload", async () => {
     const dir = mkdtempSync(join(tmpdir(), "gpc-cdp-stored-"));
     const file = join(dir, "users.json");
     writeFileSync(file, JSON.stringify({ users: [], deskCdp: { a: true } }));
@@ -191,15 +189,15 @@ describe("CDP off — gateway with split-screen disabled", { concurrency: 1 }, (
       adminPassword: "admin-secret",
       deskIds: ["a", "b"],
     });
-    assert.equal(store.deskCdpOn("a"), true);
+    assert.equal(store.deskCdpOn("a"), false);
     assert.equal(store.deskCdpOn("b"), false);
   });
 
-  it("runs the enable job on PATCH cdp true instead of a hard lock", async () => {
+  it("refuses PATCH cdp true with 多人分屏暂未开放", async () => {
     const saved = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: true } });
-    assert.ok(saved.status === 400 || saved.status === 403 || saved.status === 409 || saved.status === 502);
-    assert.doesNotMatch(saved.data.error || "", /暂未开放/);
-    assert.match(saved.data.error || "", /断开|占用|登录|不可达|登录状态|容器/);
+    assert.equal(saved.status, 409);
+    assert.match(saved.data.error || "", /暂未开放/);
+    assert.equal(saved.data.code, "SPLIT_SCREEN_DISABLED");
     assert.equal(storedCdp(usersFile, "a"), false);
     const list = await req(base, "/api/desks", { cookie: adminCookie });
     assert.equal(list.data.desks.find((d) => d.id === "a").cdp, false);

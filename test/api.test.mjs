@@ -192,9 +192,9 @@ describe("presence + kick API", { concurrency: 1 }, () => {
     assert.match(onboard.data.error || "", /调试口|多人/);
 
     const saved = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: true } });
-    assert.ok(saved.status === 400 || saved.status === 403 || saved.status === 409 || saved.status === 502);
-    assert.match(saved.data.error || "", /断开|占用|登录|不可达|登录状态/);
-    assert.doesNotMatch(saved.data.error || "", /暂未开放/);
+    assert.equal(saved.status, 409);
+    assert.match(saved.data.error || "", /暂未开放/);
+    assert.equal(saved.data.code, "SPLIT_SCREEN_DISABLED");
     const after = await req(base, "/api/desks", { cookie: adminCookie });
     assert.equal(after.data.desks.find((d) => d.id === "a").cdp, false);
     assert.equal(after.data.desks.find((d) => d.id === "b").cdp, false);

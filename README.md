@@ -25,7 +25,7 @@ GPT-Pro Cloud is a Docker gateway and browser desktop for running signed-in Chat
 
 Each account gets its own Chromium with a persistent profile. One gateway serves the login, the account picker, team management and the remote desktop — entirely in the browser.
 
-Sharing one ChatGPT account with more than one person at a time is **opt-in** (Chromium DevTools / CDP) and **off by default**. Exclusive VNC for a single occupant does not open the debug port.
+Sharing one ChatGPT login with more than one person at a time is **not available**. One Plus cookie jar cannot give real per-member isolation. Each account is exclusive VNC for a single occupant; a second person is refused. The settings page shows **多人分屏暂未开放**.
 
 ## Install
 
@@ -97,7 +97,7 @@ Members are managed on the **Team** page, which only the administrator sees.
 | Rotate a credential | Reset that member's password; their sessions are revoked |
 | Remove access | Disable or delete the member; live sessions drop immediately |
 | See who is using what | Machine cards show live presence per account; Team lists occupancy as information |
-| Disconnect a live seat | On a live account card, **断开** revokes that member's login and drops **their** VNC or tab seat; other members on the same account keep their tab. The container stays up. They sign in again. The member stays |
+| Disconnect a live occupant | On a live account card, **断开** revokes that member's login and drops **their** exclusive VNC. The container stays up. They sign in again. The member stays |
 | Delete an extra account | On a panel-created card, **删除** stops the container and wipes `./data/<id>` so a re-add is clean. Built-in `a` / `b` stay |
 
 Passwords are stored as per-user salted scrypt hashes. Sign-in is rate limited per `ip|username` (10 attempts per 15 minutes), and sessions survive a restart.
@@ -110,15 +110,11 @@ Tab seats exist only when multi-user / CDP is on for that account. They cannot u
 
 ## Sharing and memory isolation
 
-There are two ways to share a chat. The basic path needs no automation: click ChatGPT's own Share inside the page and copy — the link reaches your local clipboard through the clipboard relay. With **page assist** on, the top bar gains a Share button that the gateway clicks for you, handing you the link directly.
+There is one way to share a chat: click ChatGPT's own Share inside the exclusive VNC desktop and copy — the link reaches your local clipboard through the clipboard relay.
 
-Memory isolation is what makes one account usable by several people without shared context. Turning **多人分屏** on is a job: every assigned member gets a same-username ChatGPT project with **project-only memory** (created in a parked tab, not shown to members). Assigning a member while the desk is already on creates that project immediately. Members never create a project when they open a desk — they land on the stored `https://chatgpt.com/g/g-p-<id>-<slug>/project` URL. Chats inside a project neither read nor write the account's global memory, members don't leak context to each other, and each member's chats stay grouped in their own project. The administrator does not get a ChatGPT project; they use the complete uncut desktop.
+**多人分屏 is withdrawn.** One ChatGPT login is one cookie jar. Project-only memory and a hidden sidebar are a veneer, not permissions. Tab seats on the admin X display share one Chromium, one debugger, and one window manager — they freeze each other, white-screen, and hang delete. Copied profiles hit SingletonLock or session rotation. So this build does not offer concurrent members on one desk.
 
-When multi-user / CDP is **on**, the page keeps each member in their own project: the entire left ChatGPT sidebar is hidden on the jailed seat (other projects are unlabeled DIVs without `/g/g-p-` hrefs), and a click or navigation to another `/g/g-p-…` path is sent back to that member's project. The occupant cannot open another Chrome tab, window, split, or address bar (Ctrl/Cmd+T/N/L/W/Tab, Shift+T, Alt+D, F6, F12, Ctrl+Shift+I/J/C, Ctrl+U, and page `window.open`). Gateway tab seats stay — one isolated ChatGPT target per member. Copy/paste (Ctrl/Cmd+C/V) still works. This is an in-page lock (CDP inject + `Page.navigate`), not a server ACL — the same ChatGPT cookies are still shared. The admin desktop stays uncut.
-
-When CDP is **off**, there is no per-member jail (one VNC desktop). If the administrator pastes a single project URL as the desk start URL, the kiosk can open there, but that is one project for whoever uses the desk.
-
-Page assist is not a separate switch: it is part of the per-account **multi-user / debug port** toggle (off by default). It drives chatgpt.com through DevTools selectors, so it can break when OpenAI redesigns the page; with the toggle off you click Share yourself — links still reach your clipboard — and no project onboarding or per-member jail happens.
+When CDP is **off** (always), there is no per-member jail (one VNC desktop). If the administrator pastes a single project URL as the desk start URL, the kiosk can open there, but that is one project for whoever uses the desk.
 
 ## Configuration
 
@@ -128,7 +124,7 @@ Everything lives in `.env` — the commented [`.env.example`](.env.example) is t
 | --- | --- |
 | `AUTH_PASSWORD` | Optional: pre-seed the administrator password; leave empty to use the first-visit wizard |
 | `INSTANCES` | Built-in compose seats (`a,b`). Extra desks are added in the panel |
-| `TAB_SEATS_MAX` | Concurrent chatgpt.com tab seats per account when multi-user is on (default `3`, range 1–8). Members get tab seats; the admin uses the full desktop. Leaving parks the seat window so the next open reattaches it |
+| `TAB_SEATS_MAX` | Unused while split-screen is withdrawn (was concurrent tab seats; default `3`) |
 | `BIND_ADDR` | Address the gateway publishes on; `127.0.0.1` when tunneling, LAN or VPN address on a private network |
 | `PROXY_URL_A`, `PROXY_URL_B` | Default per-account proxy; Settings (per desk or Apply to all) take precedence and apply immediately |
 | `PROXY_URL` | Default proxy shared by every account |
@@ -139,24 +135,19 @@ On **Settings**, **Apply to all** writes the same address to every ChatGPT desk 
 
 ## Concurrent tab seats
 
-One ChatGPT account is still one desktop container and one Chromium profile (`--user-data-dir=/config/chromium`). Two members must not share one VNC mouse — and on a multi-user desk they must not share one desktop picture either. Multi-user tab seats require the admin to turn on **允许多人同时使用** for that account; until then a second person is refused.
+Split-screen / tab seats are **not available**. One ChatGPT account is one desktop container and one Chromium profile (`--user-data-dir=/config/chromium`). Two people must not share one VNC mouse.
 
-- When multi-user (CDP) is **off**, the first occupant gets exclusive KasmVNC. A second person is refused (`409 CDP_OFF`).
-- When multi-user is **on**, members get their own `chatgpt.com` tab seats in the same Chromium, jailed to their project. The admin gets the complete uncut desktop (VNC) and can see other people's Chrome tabs. Members never receive the full desktop. Later members get a new window (`newWindow: true`), parked off-screen — never a tab on the last/primary window. The gateway streams **that window only** (CDP `Page.startScreencast`) and injects pointer/keyboard with CDP `Input`. The member never sees the tab strip or another seat's target.
-- **断开** on the account card is per-seat: it drops that member's tab (or VNC) without killing the other tab or the container.
-- Cap: `TAB_SEATS_MAX` (default 3 tab seats; everyone is a tab when multi-user is on). Leaving a desk parks that member window and keeps `targetId`; the next open attaches the existing target instead of `createTarget`. The 45s idle timer only drops presence — it does not close the window. Parked seat windows are closed when split-screen is turned off, or when the member is kicked or unassigned.
-- A jailed member seat hides the entire left sidebar so they only see their project workspace. A navigation to another `/g/g-p-…/project` is bounced back. If the stored project URL is missing, the member is refused (`工作区未就绪`) — the admin re-runs the enable job or unchecks and rechecks the user. Share and page assist run only while that desk's split-screen is on.
-- `--kiosk` is off. With split-screen on, Chromium is a normal window (not `--app`) so extra seat windows stay in-process. Extra targets are new windows parked off-screen; members see the page viewport, not browser chrome.
-
-A Cloud / CI VM cannot run the real desktop image. Unit tests cover seat assignment, target isolation, disconnect-one-tab, and the occupancy cap. Phoenix should confirm two members on one signed-in account each see only their tab.
+- The first occupant gets exclusive KasmVNC. A second person is refused (`409 CDP_OFF`).
+- Settings show **多人分屏暂未开放**. There is no working toggle, no parked member windows, and no CDP enable job.
+- **断开** on the account card drops that occupant's exclusive VNC session without killing the container.
+- Admin and members use the same exclusive desktop path. Delete extra desk / remove member does not wait on the debugger.
 
 ## Architecture
 
 ```
 browser ──▶ gateway (:36090) ──▶ desktop-a / desktop-b / extra desks
             login · picker · admin    one Chromium profile per account
-                                     ├─ CDP off: exclusive KasmVNC (second occupant 409)
-                                     └─ CDP on: members get tab seats; admin gets the complete desktop
+                                     └─ exclusive KasmVNC only (second occupant 409; split-screen withdrawn)
 ```
 
 The gateway is the only published port. VNC and Chromium DevTools stay on the container network and are unreachable from outside. State lives in `./data/` (Chromium profiles) and `./data-panel/` (members, sessions, settings); both are git-ignored and never leave the host.

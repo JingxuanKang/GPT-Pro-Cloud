@@ -89,14 +89,14 @@ describe("users + presence", () => {
     assert.equal(p.list("a", 1000 + 30_000).length, 0);
   });
 
-  it("keeps per-desk CDP / multi-user off until an admin turns it on", () => {
+  it("keeps per-desk CDP / multi-user off and refuses to turn it on", () => {
     assert.equal(store.deskCdpOn("a"), false);
     assert.equal(store.deskCdpOn("b"), false);
     assert.equal(store.assistOn("a"), false);
     assert.deepEqual(store.settings(), {});
-    assert.equal(store.setDeskCdp("a", true), true);
-    assert.equal(store.deskCdpOn("a"), true);
-    assert.equal(store.assistOn("a"), true);
+    assert.throws(() => store.setDeskCdp("a", true), /多人分屏暂未开放/);
+    assert.equal(store.deskCdpOn("a"), false);
+    assert.equal(store.assistOn("a"), false);
     assert.equal(store.deskCdpOn("b"), false);
     assert.equal(store.setDeskCdp("a", false), false);
     assert.equal(store.deskCdpOn("a"), false);
@@ -115,7 +115,7 @@ describe("users + presence", () => {
       }),
     );
     const s = createUserStore({ file, adminUser: "admin", adminPassword: "admin-secret", deskIds: ["a", "b"] });
-    assert.equal(s.deskCdpOn("a"), true);
+    assert.equal(s.deskCdpOn("a"), false);
     assert.equal(s.deskCdpOn("b"), false);
     assert.equal(s.assistOn("b"), false);
     assert.deepEqual(s.settings(), {});
@@ -229,12 +229,12 @@ describe("users + presence", () => {
     assert.equal(a.canOpen(m, "c"), true);
     assert.equal(a.canOpen(m, "a"), false);
     assert.equal(a.deskCdpOn("c"), false);
-    a.setDeskCdp("c", true);
+    assert.throws(() => a.setDeskCdp("c", true), /多人分屏暂未开放/);
     const b = createUserStore({ file, adminUser: "admin", adminPassword: "admin-secret", deskIds: ["a", "b"] });
     assert.deepEqual(b.listDeskIds(), ["a", "b", "c"]);
     assert.deepEqual(b.extraDeskIds(), ["c"]);
     assert.equal(b.deskNameOf("c"), "客户号");
-    assert.equal(b.deskCdpOn("c"), true);
+    assert.equal(b.deskCdpOn("c"), false);
     assert.ok(b.canOpen(b.login("admin", "admin-secret"), "c"));
     assert.throws(() => a.addDesk("c", "重复"), /已存在/);
     assert.throws(() => a.addDesk("Bad_ID", "x"), /不合法/);
