@@ -130,7 +130,11 @@ describe("CDP lock — exclusive VNC decision", () => {
     reg.claim("a", { id: "1", username: "ada" }, { mode: "vnc" });
     assert.throws(
       () => reg.decide("a", { id: "2", username: "bob" }, { cdp: false }),
-      (err) => err.code === "CDP_OFF" && err.status === 409 && err.code === multiUserOffError().code,
+      (err) =>
+        err.code === "CDP_OFF" &&
+        err.status === 409 &&
+        err.code === multiUserOffError().code &&
+        err.message === "有人在使用",
     );
   });
 
@@ -313,6 +317,6 @@ describe("CDP lock — gateway with stored deskCdp=true", { concurrency: 1 }, ()
     const second = await req(base, "/api/desks/a/open", { method: "POST", cookie: adminCookie });
     assert.equal(second.status, 409);
     assert.equal(second.data.code, "CDP_OFF");
-    assert.match(second.data.error || "", /未开多人分屏/);
+    assert.equal(second.data.error, "有人在使用");
   });
 });
