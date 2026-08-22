@@ -25,15 +25,27 @@ text = re.sub(
 if "gpc-no-chrome" not in text:
     text = text.replace(
         "</applications>",
-        """  <!-- gpc-no-chrome -->
+        """  <!-- gpc-no-chrome: no titlebar. Do not maximize every window —
+       parked member seats must stay off-screen (X <= -1000). -->
   <application class="*">
     <decor>no</decor>
-    <maximized>yes</maximized>
-    <fullscreen>yes</fullscreen>
   </application>
 </applications>""",
         1,
     )
+# Older data volumes forced every Chromium window fullscreen, which stacked
+# member project windows on the admin VNC desktop. Drop that.
+text = text.replace(
+    """  <application class="*">
+    <decor>no</decor>
+    <maximized>yes</maximized>
+    <fullscreen>yes</fullscreen>
+  </application>""",
+    """  <application class="*">
+    <decor>no</decor>
+  </application>""",
+    1,
+)
 # VNC-only best-effort: swallow Chrome escape chords. Tab seats go through CDP Input instead.
 if "gpc-jail-keys" not in text:
     keys = (

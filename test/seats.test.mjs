@@ -493,6 +493,7 @@ describe("session cookies and input mapping", () => {
         }
         if (method === "Browser.setWindowBounds") {
           assert.equal(params.windowId, 9);
+          methods.push(JSON.stringify(params.bounds));
           return {};
         }
         throw new Error(method);

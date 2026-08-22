@@ -84,6 +84,25 @@ python3 /usr/local/bin/gpc-clipd >/tmp/gpc-clipd.log 2>&1 &
 # 容器重建后 hostname 变了，旧 SingletonLock 会让 Chromium 秒退。
 rm -f /config/chromium/SingletonLock /config/chromium/SingletonSocket /config/chromium/SingletonCookie
 
+# Mark the last exit clean so admin VNC is not greeted by "Restore pages?".
+python3 - <<'PY' >/dev/null 2>&1 || true
+import json
+from pathlib import Path
+p = Path("/config/chromium/Default/Preferences")
+try:
+    data = json.loads(p.read_text()) if p.exists() else {}
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+prof = data.setdefault("profile", {})
+if isinstance(prof, dict):
+    prof["exit_type"] = "Normal"
+    prof["exited_cleanly"] = True
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, separators=(",", ":")))
+PY
+
 while true; do
     read_proxy
     read_cdp
@@ -112,6 +131,8 @@ while true; do
         --test-type \
         --no-first-run \
         --no-default-browser-check \
+        --hide-crash-restore-bubble \
+        --disable-session-crashed-bubble \
         --start-fullscreen \
         --start-maximized \
         --password-store=basic \

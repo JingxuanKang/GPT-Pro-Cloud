@@ -14,6 +14,7 @@ import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TA
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat, seatOpenFlags } from "../lib/seats.mjs";
 import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskHasChatGPTSession, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, parkSeatTarget, reservedIdsForDesk, reserveTarget, targetExists, withDeadline } from "../lib/cdp.mjs";
+import { pickPrimaryChatGPTTarget, prepareAdminDesktop, relaxDeskWindowManager } from "../lib/desk-desktop.mjs";
 import { allocateTabSeatTarget, memberCdpMustBeTab, OPEN_CDP_MS, OPEN_FAIL, OPEN_TAB_FAIL } from "../lib/tab-open.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, pickTargetForProject, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import {
@@ -146,15 +147,18 @@ async function ensureParkedMemberSeat(deskId, user, projectUrl) {
   if (!user?.id || user.role === "admin" || !projectUrl) return null;
   const existing = seats.ofUser(deskId, user.id);
   if (existing?.mode === "tab" && existing.targetId && (await targetExists(deskId, existing.targetId))) {
+    await parkSeatTarget(deskId, existing.targetId).catch(() => {});
     return existing;
   }
   const claimedTargetIds = seats.list(deskId).map((s) => s.targetId).filter(Boolean);
   const found = await findParkedProjectTarget(deskId, projectUrl, claimedTargetIds);
   if (found?.id) {
+    await parkSeatTarget(deskId, found.id).catch(() => {});
     return seats.claim(deskId, user, { mode: "tab", targetId: found.id, projectUrl });
   }
   const startUrl = seatStartUrl({ cdp: true, projectUrl });
   const created = await createParkedChatGPTTab(deskId, { claimedTargetIds, startUrl });
+  await parkSeatTarget(deskId, created.targetId).catch(() => {});
   return seats.claim(deskId, user, { mode: "tab", targetId: created.targetId, projectUrl });
 }
 
@@ -173,6 +177,7 @@ async function warmDeskMemberSeats(deskId) {
 
 async function warmAllParkedMemberSeats() {
   for (const id of registry.ids()) {
+    if (users.deskCdpOn(id)) await relaxDeskWindowManager(id, { docker }).catch(() => {});
     await warmDeskMemberSeats(id);
   }
 }
@@ -263,8 +268,10 @@ async function enableDeskSplitScreen(deskId) {
     hasSession: () => deskHasChatGPTSession(deskId),
     createProject: (id, member) => createMemberProject(id, member),
   });
-  if (job.ok) await warmDeskMemberSeats(deskId);
-  else await forgetDeskTabSeats(deskId);
+  if (job.ok) {
+    await relaxDeskWindowManager(deskId, { docker }).catch(() => {});
+    await warmDeskMemberSeats(deskId);
+  } else await forgetDeskTabSeats(deskId);
   return job;
 }
 
@@ -325,9 +332,8 @@ function stopAdminFileWatch(userId) {
 
 async function findChatGptTargetId(deskId) {
   const pages = await listDeskTargets(deskId);
-  const chat =
-    pages.find((t) => t.type === "page" && /chatgpt\.com/i.test(t.url || "")) ||
-    pages.find((t) => t.type === "page");
+  const claimed = seats.list(deskId).map((s) => s.targetId).filter(Boolean);
+  const chat = pickPrimaryChatGPTTarget(pages, { claimedTargetIds: claimed });
   return chat?.id || "";
 }
 
@@ -828,7 +834,17 @@ async function handleApi(req, res, url, sess) {
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
     if (cdp && sess.user.role !== "admin" && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
-    if (cdp && sess.user.role === "admin") watchAdminFileChooser(id, sess.user).catch(() => {});
+    if (cdp && sess.user.role === "admin") {
+      await withDeadline(
+        prepareAdminDesktop(id, {
+          claimedTargetIds: seats.list(id).map((s) => s.targetId).filter(Boolean),
+          docker,
+        }),
+        4000,
+        "工作区还没准备好",
+      ).catch(() => {});
+      watchAdminFileChooser(id, sess.user).catch(() => {});
+    }
     return json(res, 200, { ok: true, id, mode: seat.mode, seat: publicSeat(seat), cap: seats.cap, ...seatOpenFlags({ mode: seat.mode, reused }) });
   }
   const paste = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/paste$/);

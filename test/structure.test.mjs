@@ -75,6 +75,10 @@ describe("standalone product", () => {
     assert.match(start, /--user-data-dir=\/config\/chromium/);
     assert.doesNotMatch(start, /user-data-dir=\/config\/chromium-/);
     assert.match(start, /--test-type/);
+    assert.match(start, /--hide-crash-restore-bubble/);
+    assert.match(start, /--disable-session-crashed-bubble/);
+    assert.match(start, /exit_type/);
+    assert.match(start, /Restore pages/);
     assert.match(start, /--proxy-server=/);
     assert.match(start, /gpc-proxy-override/);
     assert.match(start, /ENABLE_CDP/);
@@ -95,8 +99,10 @@ describe("standalone product", () => {
     assert.match(init, /host\.docker\.internal/);
     const wm = readFileSync(resolve(root, "docker/update-autostart.sh"), "utf8");
     assert.match(wm, /gpc-no-chrome/);
-    assert.match(wm, /<decor>no<\/decor>/);
-    assert.match(wm, /<fullscreen>yes<\/fullscreen>/);
+    assert.match(wm, /parked member seats must stay off-screen/);
+    const noChrome = wm.slice(wm.indexOf("gpc-no-chrome:"), wm.indexOf("</applications>", wm.indexOf("gpc-no-chrome:")));
+    assert.match(noChrome, /<decor>no<\/decor>/);
+    assert.doesNotMatch(noChrome, /maximized>yes/);
   });
 
   it("gateway is the only entry", () => {
@@ -144,6 +150,8 @@ describe("standalone product", () => {
     assert.match(findParkedFn, /reservedIdsForDesk/);
     assert.match(readFileSync(resolve(root, "package.json"), "utf8"), /tab-open\.test\.mjs/);
     assert.match(readFileSync(resolve(root, "package.json"), "utf8"), /file-chooser\.test\.mjs/);
+    assert.match(readFileSync(resolve(root, "package.json"), "utf8"), /desk-desktop\.test\.mjs/);
+    assert.match(gw, /prepareAdminDesktop/);
     assert.match(gw, /allocateTabSeatTarget/);
     assert.match(gw, /OPEN_CDP_MS/);
     assert.match(gw, /reservedIdsForDesk/);
