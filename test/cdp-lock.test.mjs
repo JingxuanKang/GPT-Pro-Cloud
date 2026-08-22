@@ -145,14 +145,16 @@ describe("CDP lock — exclusive VNC decision", () => {
 });
 
 describe("CDP lock — settings UI", () => {
-  it("shows only the closed notice and no working enable switch", () => {
+  it("omits the abandoned 多人分屏 card and any 暂未开放 copy", () => {
     const ui = readFileSync(resolve(root, "gateway/web/app.js"), "utf8");
     const settingsStart = ui.indexOf("function renderSettings");
     const settingsBlock = ui.slice(settingsStart, ui.indexOf("const isMac", settingsStart));
-    const panel = settingsBlock.slice(settingsBlock.indexOf("<b>多人分屏</b>"), settingsBlock.indexOf("<b>复制粘贴</b>"));
-    assert.match(panel, /多人分屏暂未开放/);
-    assert.doesNotMatch(panel, /data-cdp-toggle|checkbox|switch-row|cdp-rows|cdp-empty/);
-    assert.doesNotMatch(panel, /data-cdp-master|cdp-master/);
+    assert.doesNotMatch(settingsBlock, /多人分屏/);
+    assert.doesNotMatch(settingsBlock, /暂未开放/);
+    assert.match(settingsBlock, /<b>复制粘贴<\/b>/);
+    assert.match(settingsBlock, /<b>出口代理<\/b>/);
+    assert.doesNotMatch(settingsBlock, /data-cdp-toggle|checkbox|switch-row|cdp-rows|cdp-empty/);
+    assert.doesNotMatch(settingsBlock, /data-cdp-master|cdp-master/);
     assert.doesNotMatch(ui, /data-cdp-toggle/);
     const deskCdpOnFn = ui.slice(ui.indexOf("function deskCdpOn"), ui.indexOf("function route"));
     assert.match(deskCdpOnFn, /return false/);
