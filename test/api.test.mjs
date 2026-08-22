@@ -181,7 +181,7 @@ describe("presence + kick API", { concurrency: 1 }, () => {
     assert.equal(cyd.status, 200);
     const second = await req(base, "/api/desks/a/open", { method: "POST", cookie: cyd.cookie });
     assert.equal(second.status, 409);
-    assert.equal(second.data.error, "有人在使用");
+    assert.equal(second.data.error, "该账号正在使用中");
     assert.equal(second.data.code, "CDP_OFF");
 
     const share = await req(base, "/api/desks/a/share", { method: "POST", cookie: ada.cookie });
@@ -201,6 +201,20 @@ describe("presence + kick API", { concurrency: 1 }, () => {
     const off = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: false } });
     assert.equal(off.status, 200);
     assert.equal(off.data.cdp, false);
+
+    const empty = await req(base, "/api/desks/a/files", { method: "POST", cookie: ada.cookie, body: { files: [] } });
+    assert.equal(empty.status, 400);
+    assert.equal(empty.data.error, "空文件");
+    const cancel = await req(base, "/api/desks/a/files", { method: "POST", cookie: ada.cookie, body: { cancel: true } });
+    assert.equal(cancel.status, 200);
+    assert.equal(cancel.data.kind, "cancel");
+    const pdf = await req(base, "/api/desks/a/files", {
+      method: "POST",
+      cookie: ada.cookie,
+      body: { files: [{ name: "a.pdf", mime: "application/pdf", data: Buffer.from("%PDF").toString("base64") }] },
+    });
+    assert.ok(pdf.status === 409 || pdf.status === 502);
+    assert.doesNotMatch(pdf.data.error || "", /开启多人分屏|有人在使用/);
   });
 });
 
@@ -272,7 +286,7 @@ describe("CDP lock ignores stored deskCdp=true", { concurrency: 1 }, () => {
     assert.equal(ada.status, 200);
     const second = await req(base, "/api/desks/a/open", { method: "POST", cookie: ada.cookie });
     assert.equal(second.status, 409);
-    assert.equal(second.data.error, "有人在使用");
+    assert.equal(second.data.error, "该账号正在使用中");
     assert.equal(second.data.code, "CDP_OFF");
 
     const saved = await req(base, "/api/admin/desks/a", { method: "PATCH", cookie: adminCookie, body: { cdp: true } });
