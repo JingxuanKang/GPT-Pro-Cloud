@@ -6,7 +6,7 @@ import httpProxy from "http-proxy";
 import { createSessionToken, readSession, createLoginLimiter, createSessionStore } from "../lib/auth.mjs";
 import { parseInstances } from "../lib/instances.mjs";
 import { createDeskRegistry, provisionDesk, retireDesk } from "../lib/desks.mjs";
-import { createDockerClient, ensureDeskContainer, removeDeskContainer } from "../lib/docker.mjs";
+import { createDockerClient, deskContainerName, ensureDeskContainer, removeDeskContainer } from "../lib/docker.mjs";
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
 import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
@@ -31,6 +31,8 @@ import {
 } from "../lib/split-screen.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
+import { applyDeskUpload, armFileChooser, createChooserRegistry, FILE_TOO_BIG, FILE_UPLOAD_FAIL } from "../lib/file-chooser.mjs";
+import { stageDeskUpload } from "../lib/desk-files.mjs";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -65,8 +67,11 @@ const liveSockets = createSocketHub();
 const seatWss = new WebSocketServer({ noServer: true });
 const loginLimiter = createLoginLimiter({ maxFails: 10, windowMs: 15 * 60 * 1000 });
 const deskCdpLocks = new Map();
+const choosers = createChooserRegistry();
+const adminFileWatches = new Map();
 const CLOSE_SEAT_MS = 2000;
 const DOCKER_DELETE_MS = 8_000;
+const FILE_BODY_MAX = 16 * 1024 * 1024;
 
 async function withDeskCdp(id, fn) {
   const prev = deskCdpLocks.get(id) || Promise.resolve();
@@ -287,12 +292,14 @@ async function closeSeatTab(seat) {
 }
 
 async function releaseUserSeats(userId) {
+  stopAdminFileWatch(userId);
   const released = seats.releaseByUser(userId);
   await Promise.all(released.map((s) => closeSeatTab(s)));
   return released;
 }
 
 async function parkUserSeatWindows(userId) {
+  stopAdminFileWatch(userId);
   const held = seats.ofUserAll(userId);
   const parked = [];
   for (const seat of held) {
@@ -304,6 +311,127 @@ async function parkUserSeatWindows(userId) {
     }
   }
   return parked;
+}
+
+function stopAdminFileWatch(userId) {
+  const watch = adminFileWatches.get(userId);
+  adminFileWatches.delete(userId);
+  try {
+    watch?.dispose?.();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function findChatGptTargetId(deskId) {
+  const pages = await listDeskTargets(deskId);
+  const chat =
+    pages.find((t) => t.type === "page" && /chatgpt\.com/i.test(t.url || "")) ||
+    pages.find((t) => t.type === "page");
+  return chat?.id || "";
+}
+
+async function watchAdminFileChooser(deskId, user) {
+  stopAdminFileWatch(user.id);
+  if (!users.deskCdpOn(deskId) || user.role !== "admin") return;
+  const targetId = await findChatGptTargetId(deskId);
+  if (!targetId) return;
+  const attached = await attachSeatTarget(deskId, targetId);
+  const armed = await armFileChooser({
+    send: (method, params, sid) => attached.cdp.send(method, params, sid ?? attached.sessionId),
+    on: (fn) => attached.cdp.on(fn),
+    sessionId: attached.sessionId,
+    onOpened: (info) => {
+      choosers.set(deskId, user.id, { ...info, targetId });
+    },
+  });
+  adminFileWatches.set(user.id, {
+    deskId,
+    dispose() {
+      try {
+        armed.dispose?.();
+      } catch {
+        /* ignore */
+      }
+      Promise.resolve(attached.release?.()).catch(() => {});
+      choosers.clear(deskId, user.id);
+    },
+  });
+}
+
+async function readFileUploadBody(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) {
+    size += c.length;
+    if (size > FILE_BODY_MAX) {
+      const err = new Error(FILE_TOO_BIG);
+      err.status = 413;
+      throw err;
+    }
+    chunks.push(c);
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const err = new Error("无法上传文件");
+    err.status = 400;
+    throw err;
+  }
+}
+
+async function pasteImageOnDesk(deskId, user, img) {
+  const tab = seats.ofUser(deskId, user.id);
+  const mime = img.mime === "image/jpg" ? "image/jpeg" : img.mime;
+  if (tab?.mode === "tab") {
+    const plan = tabPastePlan(mime, img.bytes);
+    if (plan.error) return { ok: false, error: plan.error, status: plan.status || 400 };
+    const attached = await attachSeatTarget(deskId, tab.targetId);
+    try {
+      return await applyTabPastePlan(
+        (method, params) => attached.cdp.send(method, params, attached.sessionId),
+        plan,
+      );
+    } finally {
+      await attached.release();
+    }
+  }
+  const r = await fetch(`http://desktop-${deskId}:18790/`, {
+    method: "POST",
+    headers: { "content-type": mime, "content-length": String(img.bytes.length) },
+    body: img.bytes,
+  });
+  if (!r.ok) return { ok: false, error: "无法粘贴", status: 502 };
+  return { ok: true, kind: "image" };
+}
+
+async function handleDeskFileUpload(deskId, user, body) {
+  const seat = seats.ofUser(deskId, user.id);
+  const pending = choosers.get(deskId, user.id);
+  const cdpOn = users.deskCdpOn(deskId);
+  let targetId = pending?.targetId || (seat?.mode === "tab" ? seat.targetId : "");
+  if (cdpOn && !targetId) targetId = await findChatGptTargetId(deskId);
+  const cancel = !!body.cancel;
+  try {
+    const out = await applyDeskUpload({
+      files: body.files,
+      cancel,
+      drop: body.drop && typeof body.drop === "object" ? body.drop : null,
+      pending,
+      cdpOn,
+      targetId,
+      attach: (tid) => attachSeatTarget(deskId, tid),
+      stage: (files) => stageDeskUpload(deskId, files, { docker, containerName: deskContainerName(deskId) }),
+      pasteImages: (img) => pasteImageOnDesk(deskId, user, img),
+    });
+    if (!cancel && out.ok) choosers.clear(deskId, user.id);
+    if (cancel) choosers.clear(deskId, user.id);
+    return out;
+  } catch (e) {
+    return { ok: false, error: e.message || FILE_UPLOAD_FAIL, status: e.status || 502 };
+  }
 }
 
 async function closeUnassignedSeatTabs(userId, prevDesks, nextDesks) {
@@ -700,6 +828,7 @@ async function handleApi(req, res, url, sess) {
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
     if (cdp && sess.user.role !== "admin" && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
+    if (cdp && sess.user.role === "admin") watchAdminFileChooser(id, sess.user).catch(() => {});
     return json(res, 200, { ok: true, id, mode: seat.mode, seat: publicSeat(seat), cap: seats.cap, ...seatOpenFlags({ mode: seat.mode, reused }) });
   }
   const paste = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/paste$/);
@@ -743,6 +872,28 @@ async function handleApi(req, res, url, sess) {
     } catch {
       return json(res, 502, { error: "无法粘贴" });
     }
+  }
+  const filesApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/files$/);
+  if (filesApi && req.method === "POST") {
+    const id = filesApi[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    let body;
+    try {
+      body = await readFileUploadBody(req);
+    } catch (e) {
+      return json(res, e.status || 400, { error: e.message || FILE_UPLOAD_FAIL });
+    }
+    const out = await handleDeskFileUpload(id, sess.user, body);
+    if (!out.ok) return json(res, out.status || 502, { error: out.error || FILE_UPLOAD_FAIL });
+    return json(res, 200, { ok: true, kind: out.kind || (out.cancelled ? "cancel" : "file") });
+  }
+  const chooserApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/file-chooser$/);
+  if (chooserApi && req.method === "GET") {
+    const id = chooserApi[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const opened = await choosers.wait(id, sess.user.id, 20_000);
+    if (!opened) return json(res, 200, { open: false });
+    return json(res, 200, { open: true, mode: opened.mode || "selectSingle" });
   }
   const copy = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/copy$/);
   if (copy && req.method === "POST") {
@@ -1006,7 +1157,7 @@ server.on("upgrade", (req, socket, head) => {
     seatWss.handleUpgrade(req, socket, head, (ws) => {
       liveSockets.add(sess.user.id, ws);
       seats.beat(seat.id);
-      startSeatScreencast({ ws, seat }).catch((err) => {
+      startSeatScreencast({ ws, seat, choosers }).catch((err) => {
         console.error("seat stream:", err.message);
         try {
           ws.close();

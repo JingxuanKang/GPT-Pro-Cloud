@@ -275,6 +275,9 @@ describe("cannot see other targets", () => {
     assert.equal(raw.includes("t-ada"), false);
     assert.equal(clientStreamMessage({ type: "ready", targetId: "nope" }).mode, "tab");
     assert.equal(JSON.stringify(clientStreamMessage({ type: "ready", targetId: "nope" })).includes("nope"), false);
+    const pick = clientStreamMessage({ type: "file-chooser", mode: "selectMultiple", targetId: "secret", backendNodeId: 9 });
+    assert.deepEqual(pick, { type: "file-chooser", mode: "selectMultiple" });
+    assert.equal(JSON.stringify(pick).includes("secret"), false);
   });
 });
 
