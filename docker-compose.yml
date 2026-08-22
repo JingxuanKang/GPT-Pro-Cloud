@@ -69,8 +69,8 @@ services:
       PROXY_URL_OVERRIDE: ${PROXY_URL_A:-}
     volumes:
       - ./data/a:/config
-    # Chromium DevTools 默认关闭。面板「多人分屏」才会写 ENABLE_CDP /
-    # /config/.gpc-cdp。调试口不映射宿主机，cdp-fwd 只接受 gateway。
+    # Exclusive VNC 的文件管道会开本机调试口（回形针走用户电脑选文件）。
+    # 多人分屏仍关闭。调试口不映射宿主机，cdp-fwd 只接受 gateway。
 
   desktop-b:
     <<: *desktop

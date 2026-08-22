@@ -6,17 +6,19 @@ import httpProxy from "http-proxy";
 import { createSessionToken, readSession, createLoginLimiter, createSessionStore } from "../lib/auth.mjs";
 import { parseInstances } from "../lib/instances.mjs";
 import { createDeskRegistry, provisionDesk, retireDesk } from "../lib/desks.mjs";
-import { createDockerClient, ensureDeskContainer, removeDeskContainer } from "../lib/docker.mjs";
+import { createDockerClient, deskContainerName, ensureDeskContainer, removeDeskContainer } from "../lib/docker.mjs";
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
 import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, evaluateOnTarget, forgetDeskBrowser, targetExists } from "../lib/cdp.mjs";
+import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskBrowserWs, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, targetExists } from "../lib/cdp.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
+import { applyDeskUpload, armFileChooser, createChooserRegistry, FILE_TOO_BIG, FILE_UPLOAD_FAIL } from "../lib/file-chooser.mjs";
+import { stageDeskUpload } from "../lib/desk-files.mjs";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -51,8 +53,12 @@ const liveSockets = createSocketHub();
 const seatWss = new WebSocketServer({ noServer: true });
 const loginLimiter = createLoginLimiter({ maxFails: 10, windowMs: 15 * 60 * 1000 });
 const deskCdpLocks = new Map();
+const choosers = createChooserRegistry();
+const fileWatches = new Map();
+const FILE_BODY_MAX = 16 * 1024 * 1024;
 /** Yield so a second /open can create a tab before assist grabs the debugger. */
 const ONBOARD_YIELD_MS = 1500;
+const FILE_PIPE_WAIT_MS = 15_000;
 
 async function withDeskCdp(id, fn) {
   const prev = deskCdpLocks.get(id) || Promise.resolve();
@@ -176,7 +182,130 @@ async function closeSeatTab(seat) {
   }
 }
 
+function stopFileWatch(userId) {
+  const watch = fileWatches.get(userId);
+  fileWatches.delete(userId);
+  try {
+    watch?.dispose?.();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function findChatGptTargetId(deskId) {
+  try {
+    const pages = await listDeskTargets(deskId);
+    const chat =
+      pages.find((t) => t.type === "page" && /chatgpt\.com/i.test(t.url || "")) ||
+      pages.find((t) => t.type === "page");
+    return chat?.id || "";
+  } catch {
+    return "";
+  }
+}
+
+async function ensureExclusiveFilePipe(deskId) {
+  try {
+    await deskBrowserWs(deskId);
+    return true;
+  } catch {
+    /* old desktop images start Chromium without a debugger until .gpc-cdp=1 */
+  }
+  try {
+    await applyDeskCdpLive(deskId, true);
+  } catch {
+    return false;
+  }
+  const t0 = Date.now();
+  while (Date.now() - t0 < FILE_PIPE_WAIT_MS) {
+    try {
+      await deskBrowserWs(deskId);
+      return true;
+    } catch {
+      await sleep(400);
+    }
+  }
+  return false;
+}
+
+async function watchExclusiveFileChooser(deskId, user) {
+  stopFileWatch(user.id);
+  const ready = await ensureExclusiveFilePipe(deskId);
+  if (!ready) return;
+  const targetId = await findChatGptTargetId(deskId);
+  if (!targetId) return;
+  const attached = await attachSeatTarget(deskId, targetId);
+  const armed = await armFileChooser({
+    send: (method, params, sid) => attached.cdp.send(method, params, sid ?? attached.sessionId),
+    on: (fn) => attached.cdp.on(fn),
+    sessionId: attached.sessionId,
+    onOpened: (info) => {
+      choosers.set(deskId, user.id, { ...info, targetId });
+    },
+  });
+  fileWatches.set(user.id, {
+    deskId,
+    dispose() {
+      try {
+        armed.dispose?.();
+      } catch {
+        /* ignore */
+      }
+      Promise.resolve(attached.release?.()).catch(() => {});
+      choosers.clear(deskId, user.id);
+    },
+  });
+}
+
+async function readFileUploadBody(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) {
+    size += c.length;
+    if (size > FILE_BODY_MAX) {
+      const err = new Error(FILE_TOO_BIG);
+      err.status = 413;
+      throw err;
+    }
+    chunks.push(c);
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const err = new Error("无法上传文件");
+    err.status = 400;
+    throw err;
+  }
+}
+
+async function handleDeskFileUpload(deskId, user, body) {
+  const pending = choosers.get(deskId, user.id);
+  const cancel = !!body.cancel;
+  let targetId = pending?.targetId || "";
+  if (!targetId && !cancel && Array.isArray(body.files) && body.files.length) {
+    targetId = await findChatGptTargetId(deskId);
+  }
+  try {
+    const out = await applyDeskUpload({
+      files: body.files,
+      cancel,
+      drop: body.drop && typeof body.drop === "object" ? body.drop : null,
+      pending,
+      targetId,
+      attach: (tid) => attachSeatTarget(deskId, tid),
+      stage: (files) => stageDeskUpload(deskId, files, { docker, containerName: deskContainerName(deskId) }),
+    });
+    if (out.ok || cancel) choosers.clear(deskId, user.id);
+    return out;
+  } catch (e) {
+    return { ok: false, error: e.message || FILE_UPLOAD_FAIL, status: e.status || 502 };
+  }
+}
+
 async function releaseUserSeats(userId) {
+  stopFileWatch(userId);
   const released = seats.releaseByUser(userId);
   await Promise.all(released.map((s) => closeSeatTab(s)));
   return released;
@@ -520,6 +649,13 @@ async function handleApi(req, res, url, sess) {
     presence.beat(id, sess.user);
     if (cdp && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
     if (cdp) kickOnboard(id, sess.user, seat?.targetId);
+    if (seat?.mode === "vnc") {
+      try {
+        await watchExclusiveFileChooser(id, sess.user);
+      } catch {
+        /* file pipe is best-effort — exclusive VNC still opens */
+      }
+    }
     return json(res, 200, { ok: true, id, mode: seat.mode, seat: publicSeat(seat), cap: seats.cap });
   }
   const paste = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/paste$/);
@@ -563,6 +699,28 @@ async function handleApi(req, res, url, sess) {
     } catch {
       return json(res, 502, { error: "无法粘贴" });
     }
+  }
+  const filesApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/files$/);
+  if (filesApi && req.method === "POST") {
+    const id = filesApi[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    let body;
+    try {
+      body = await readFileUploadBody(req);
+    } catch (e) {
+      return json(res, e.status || 400, { error: e.message || FILE_UPLOAD_FAIL });
+    }
+    const out = await handleDeskFileUpload(id, sess.user, body);
+    if (!out.ok) return json(res, out.status || 502, { error: out.error || FILE_UPLOAD_FAIL });
+    return json(res, 200, { ok: true, kind: out.kind || (out.cancelled ? "cancel" : "file") });
+  }
+  const chooserApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/file-chooser$/);
+  if (chooserApi && req.method === "GET") {
+    const id = chooserApi[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const opened = await choosers.wait(id, sess.user.id, 20_000);
+    if (!opened) return json(res, 200, { open: false });
+    return json(res, 200, { open: true, mode: opened.mode || "selectSingle" });
   }
   const copy = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/copy$/);
   if (copy && req.method === "POST") {

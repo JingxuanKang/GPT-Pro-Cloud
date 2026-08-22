@@ -94,6 +94,7 @@ const ICO = {
   userplus: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM3.5 20c.7-3.6 3.4-5.5 6.5-5.5 1.1 0 2.1.2 3 .7M18 14v6M15 17h6"/></svg>`,
   userx: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM3.5 20c.7-3.6 3.4-5.5 6.5-5.5 1.1 0 2.1.2 3 .7M16 15l5 5M21 15l-5 5"/></svg>`,
   clip: `<svg class="ico-clip" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M9 4h6v3H9zM15 5h3a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h3"/></svg>`,
+  upload: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 16V5M8 8.5 12 4.5 16 8.5M6 19h12"/></svg>`,
 };
 
 function greet() {
@@ -565,10 +566,13 @@ function renderDesk() {
       </div>
       <div class="chrome-end">
         ${deskCdpOn(state.deskId) ? `<button type="button" class="chrome-btn" id="share-chat">${ICO.share}<span>分享</span></button>` : ""}
+        <button type="button" class="chrome-btn" id="upload-files">${ICO.upload}<span>上传</span></button>
         <button type="button" class="clip-chip" id="clip-chip"></button>
       </div>
     </div>
     <div class="frame">
+      <div class="file-drop-shield" id="file-drop-shield" aria-hidden="true"></div>
+      <input type="file" id="os-files" multiple hidden accept=".pdf,.doc,.docx,.txt,image/*" />
       <div class="frame-wait" id="frame-wait">${MARK}</div>
       ${surface}
     </div>
@@ -642,6 +646,7 @@ function stopPeek() {
 function dropPresence() {
   stopPeek();
   stopSeatCast();
+  stopChooserPoll();
   if (!state.me) return;
   const uid = state.me.username;
   for (const id of Object.keys(state.presence)) {
@@ -883,6 +888,17 @@ function bindDesk() {
       const ok = await copyLastToLocal();
       toast(ok ? lastClip.kind === "image" ? "图片已拷到本机" : "已拷到本机" : "没拷出去，再点一次", lastClip.kind);
     };
+  const uploadBtn = $("#upload-files");
+  if (uploadBtn)
+    uploadBtn.onclick = async () => {
+      const list = await pickOsFiles({ multiple: true });
+      if (!list.length) return;
+      const r = await sendOsFiles(list);
+      toast(r.ok ? "已添加到对话" : r.error || "无法上传文件");
+    };
+  bindDeskFileDrop();
+  if (state.deskMode === "vnc") startChooserPoll();
+  else stopChooserPoll();
   const shareBtn = $("#share-chat");
   if (shareBtn)
     shareBtn.onclick = async () => {
@@ -926,6 +942,138 @@ function bindDesk() {
       /* ignore */
     }
   }, 2000);
+}
+
+function ensureOsFileInput() {
+  let el = $("#os-files");
+  if (el) return el;
+  el = document.createElement("input");
+  el.type = "file";
+  el.id = "os-files";
+  el.multiple = true;
+  el.hidden = true;
+  el.accept = ".pdf,.doc,.docx,.txt,image/*";
+  document.body.appendChild(el);
+  return el;
+}
+
+function pickOsFiles({ multiple = true } = {}) {
+  const el = ensureOsFileInput();
+  el.multiple = !!multiple;
+  el.value = "";
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (list) => {
+      if (done) return;
+      done = true;
+      window.removeEventListener("focus", onFocus);
+      el.onchange = null;
+      resolve(Array.from(list || []));
+    };
+    el.onchange = () => finish(el.files);
+    const onFocus = () => setTimeout(() => finish(el.files), 400);
+    window.addEventListener("focus", onFocus, { once: true });
+    el.click();
+  });
+}
+
+function bytesToB64(buf) {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  const chunk = 0x2000;
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+async function postDeskFiles(payload) {
+  const id = state.deskId;
+  if (!id) return { ok: false, error: "无法上传文件" };
+  const r = await fetch(`/api/desks/${id}/files`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) return { ok: false, error: data.error || "无法上传文件" };
+  return { ok: true, kind: data.kind };
+}
+
+async function sendOsFiles(fileList, extra = {}) {
+  const files = [];
+  let total = 0;
+  for (const f of fileList) {
+    total += f.size || 0;
+    if (total > 12 * 1024 * 1024) return { ok: false, error: "文件太大，请选择 12MB 以内的文件" };
+    const buf = await f.arrayBuffer();
+    files.push({
+      name: f.name,
+      mime: f.type || "application/octet-stream",
+      data: bytesToB64(buf),
+    });
+  }
+  setChip("pasting");
+  const r = await postDeskFiles({ files, ...extra });
+  setChip("waiting");
+  return r;
+}
+
+async function onRemoteFileChooser(mode) {
+  const list = await pickOsFiles({ multiple: mode !== "selectSingle" });
+  if (!list.length) {
+    await postDeskFiles({ cancel: true });
+    return;
+  }
+  const r = await sendOsFiles(list);
+  toast(r.ok ? "已添加到对话" : r.error || "无法上传文件");
+}
+
+let chooserPoll = 0;
+
+function stopChooserPoll() {
+  chooserPoll += 1;
+}
+
+async function startChooserPoll() {
+  const ticket = ++chooserPoll;
+  const id = state.deskId;
+  while (ticket === chooserPoll && state.view === "desk" && state.deskId === id && state.deskMode === "vnc") {
+    try {
+      const r = await fetch(`/api/desks/${id}/file-chooser`, { credentials: "same-origin" });
+      if (ticket !== chooserPoll) return;
+      if (!r.ok) {
+        await new Promise((ok) => setTimeout(ok, 1500));
+        continue;
+      }
+      const data = await r.json().catch(() => ({}));
+      if (data.open) await onRemoteFileChooser(data.mode);
+    } catch {
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
+  }
+}
+
+function bindDeskFileDrop() {
+  const shield = $("#file-drop-shield");
+  if (!shield) return;
+  const hasFiles = (e) => [...(e.dataTransfer?.items || [])].some((it) => it.kind === "file");
+  shield.ondragover = (e) => e.preventDefault();
+  shield.ondragleave = () => shield.classList.remove("on");
+  shield.ondrop = (e) => {
+    e.preventDefault();
+    shield.classList.remove("on");
+    const list = Array.from(e.dataTransfer?.files || []);
+    if (!list.length) return;
+    sendOsFiles(list).then((r) => toast(r.ok ? "已添加到对话" : r.error || "无法上传文件"));
+  };
+  if (document.documentElement.dataset.gpcFileDrop === "1") return;
+  document.documentElement.dataset.gpcFileDrop = "1";
+  document.addEventListener("dragenter", (e) => {
+    if (state.view !== "desk" || !hasFiles(e)) return;
+    $("#file-drop-shield")?.classList.add("on");
+  });
 }
 
 async function sendDeskPaste(body, mime) {

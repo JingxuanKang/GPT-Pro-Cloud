@@ -36,13 +36,11 @@ read_cdp() {
     fi
 }
 
+# Exclusive VNC file pipe: debugger + cdp-fwd stay up so the gateway can
+# intercept ChatGPT paperclip. This is not 多人分屏 / tab seats.
 sync_cdp_fwd() {
-    if [ "${CDP_ON}" = "1" ]; then
-        if ! pgrep -f '/usr/local/bin/gpc-cdp-fwd' >/dev/null 2>&1; then
-            python3 /usr/local/bin/gpc-cdp-fwd >/tmp/gpc-cdp-fwd.log 2>&1 &
-        fi
-    else
-        pkill -f '/usr/local/bin/gpc-cdp-fwd' >/dev/null 2>&1 || true
+    if ! pgrep -f '/usr/local/bin/gpc-cdp-fwd' >/dev/null 2>&1; then
+        python3 /usr/local/bin/gpc-cdp-fwd >/tmp/gpc-cdp-fwd.log 2>&1 &
     fi
 }
 read_proxy
@@ -93,12 +91,13 @@ while true; do
         PROXY_FLAG="--proxy-server=${PROXY_URL}"
         echo "[autostart] proxy-server=${PROXY_URL}"
     fi
-    CDP_FLAGS=""
+    # Always on for the exclusive-VNC file pipe. CDP_ON is leftover 多人分屏.
+    CDP_FLAGS="--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins=*"
+    echo "[autostart] file-pipe :9222"
     if [ "${CDP_ON}" = "1" ]; then
-        CDP_FLAGS="--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins=*"
         echo "[autostart] cdp=on :9222"
     else
-        echo "[autostart] cdp=off"
+        echo "[autostart] cdp=off (file-pipe still on)"
     fi
     # No --kiosk: kiosk + --app blocks extra chatgpt.com tabs. Tab seats use
     # Target.createTarget (new window, parked off-screen). Members stream the

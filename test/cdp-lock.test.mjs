@@ -134,7 +134,7 @@ describe("CDP lock — exclusive VNC decision", () => {
         err.code === "CDP_OFF" &&
         err.status === 409 &&
         err.code === multiUserOffError().code &&
-        err.message === "有人在使用",
+        err.message === "该账号正在使用中",
     );
   });
 
@@ -171,6 +171,8 @@ describe("CDP lock — share / jail / onboard stay gated", () => {
     assert.match(openBlock, /if \(cdp && projectUrl\) armSeatProjectJail/);
     assert.equal([...openBlock.matchAll(/kickOnboard\(/g)].length, 1);
     assert.match(openBlock, /if \(cdp\) kickOnboard/);
+    assert.match(openBlock, /watchExclusiveFileChooser/);
+    assert.doesNotMatch(openBlock, /if \(cdp\) watchExclusiveFileChooser/);
     assert.match(openBlock, /const projectUrl = cdp \? users\.projectUrlOn/);
     assert.match(gw, /if \(!users\.deskCdpOn\(id\)\) return json\(res, 403/);
     assert.match(ui, /deskCdpOn\(state\.deskId\) \? `<button type="button" class="chrome-btn" id="share-chat"/);
@@ -317,6 +319,6 @@ describe("CDP lock — gateway with stored deskCdp=true", { concurrency: 1 }, ()
     const second = await req(base, "/api/desks/a/open", { method: "POST", cookie: adminCookie });
     assert.equal(second.status, 409);
     assert.equal(second.data.code, "CDP_OFF");
-    assert.equal(second.data.error, "有人在使用");
+    assert.equal(second.data.error, "该账号正在使用中");
   });
 });
