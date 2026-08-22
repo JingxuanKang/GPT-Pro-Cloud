@@ -428,12 +428,6 @@ function renderSettings() {
     </header>
     <section class="panel">
       <div class="panel-head">
-        <b>多人分屏</b>
-        <em>多人分屏暂未开放</em>
-      </div>
-    </section>
-    <section class="panel">
-      <div class="panel-head">
         <b>复制粘贴</b>
         <em>在桌面画面里直接 ⌘C / ⌘V，双向生效。独占 VNC 走整桌剪贴板（文字和截图）。</em>
       </div>
