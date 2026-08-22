@@ -174,12 +174,12 @@ describe("seat assignment", () => {
     reg.claim("a", user("1", "ada"), { mode: "vnc" });
     assert.throws(
       () => reg.decide("a", user("2", "bob"), { cdp: false }),
-      (err) => err.code === "CDP_OFF" && err.status === 409 && err.message === "有人在使用",
+      (err) => err.code === "CDP_OFF" && err.status === 409 && err.message === "该账号正在使用中",
     );
-    assert.equal(multiUserOffError().message, "有人在使用");
+    assert.equal(multiUserOffError().message, "该账号正在使用中");
     assert.throws(
       () => decideOpenMode({ occupants: [{ userId: "1" }], userId: "2", cdp: false }),
-      (err) => err.code === multiUserOffError().code && err.message === "有人在使用",
+      (err) => err.code === multiUserOffError().code && err.message === "该账号正在使用中",
     );
   });
 });
