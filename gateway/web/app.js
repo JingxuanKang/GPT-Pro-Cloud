@@ -754,6 +754,7 @@ function renderDesk() {
         ${deskCdpOn(state.deskId) ? `<button type="button" class="chrome-btn" id="share-chat">${ICO.share}<span>分享</span></button>` : ""}
         <button type="button" class="chrome-btn" id="take-image">${ICO.image}<span>取图片</span></button>
         <button type="button" class="chrome-btn" id="upload-files">${ICO.upload}<span>上传</span></button>
+        <button type="button" class="chrome-btn" id="download-image" title="把当前对话里最新一张生成图保存到这台电脑">${ICO.download}<span>下载图片</span></button>
         <button type="button" class="chrome-btn" id="download-files" aria-haspopup="menu">${ICO.download}<span>下载</span><i class="dl-count" id="dl-count" hidden></i></button>
         <div class="download-menu" id="download-menu" hidden></div>
         <button type="button" class="clip-chip" id="clip-chip"></button>
@@ -851,6 +852,7 @@ function dropPresence() {
   stopSeatCast();
   stopChooserPoll();
   stopDownloadPoll();
+  stopImageDownloadPoll();
   if (!state.me) return;
   const uid = state.me.username;
   for (const id of Object.keys(state.presence)) {
@@ -1227,6 +1229,48 @@ function bindDesk() {
   if (state.deskMode === "vnc") startChooserPoll();
   else stopChooserPoll();
   startDownloadPoll();
+  const imageBtn = $("#download-image");
+  if (imageBtn)
+    imageBtn.onclick = async () => {
+      if (!state.deskId || imageBtn.disabled) return;
+      if (pendingLocalImage) {
+        const held = pendingLocalImage;
+        pendingLocalImage = null;
+        saveBlobLocally(held.blob, held.name);
+        toast("已开始下载到本机");
+        return;
+      }
+      imageBtn.disabled = true;
+      toast("正在从对话里取出生成图");
+      try {
+        const r = await fetch(`/api/desks/${state.deskId}/gpt-image`, { method: "POST", credentials: "same-origin" });
+        const ct = r.headers.get("content-type") || "";
+        if (!r.ok || ct.includes("application/json")) {
+          const data = await r.json().catch(() => ({}));
+          if (r.status === 401 && state.me) {
+            state.me = null;
+            setHash("/login");
+            return;
+          }
+          toast(data.error || "无法读取这张生成图");
+          return;
+        }
+        const blob = await r.blob();
+        const name = filenameFromDisposition(r.headers.get("content-disposition"));
+        if (navigator.userActivation && navigator.userActivation.isActive === false) {
+          pendingLocalImage = { blob, name };
+          toast("图片已取到。再点一次「下载图片」保存到这台电脑");
+          return;
+        }
+        saveBlobLocally(blob, name);
+        toast("已开始下载到本机");
+      } catch {
+        toast("无法读取这张生成图");
+      } finally {
+        imageBtn.disabled = false;
+      }
+    };
+  startImageDownloadPoll();
   const shareBtn = $("#share-chat");
   if (shareBtn)
     shareBtn.onclick = async () => {
@@ -1399,7 +1443,36 @@ async function onRemoteFileChooser(mode) {
   toast(r.ok ? "已添加到对话" : r.error || "无法上传文件");
 }
 
+function filenameFromDisposition(header) {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header || "");
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      /* fall through */
+    }
+  }
+  const plain = /filename="([^"]+)"/i.exec(header || "");
+  return plain?.[1] || "ChatGPT-image.png";
+}
+
+function saveBlobLocally(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name || "ChatGPT-image.png";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
 let chooserPoll = 0;
+let imageDownloadPoll = 0;
+let imagePollDesk = "";
+let pendingLocalImage = null;
+const savedImageIds = new Set();
 
 function stopChooserPoll() {
   chooserPoll += 1;
@@ -1500,6 +1573,50 @@ async function startDownloadPoll() {
     }
   }
 }
+
+function stopImageDownloadPoll() {
+  imageDownloadPoll += 1;
+  pendingLocalImage = null;
+}
+
+async function startImageDownloadPoll() {
+  const ticket = ++imageDownloadPoll;
+  const id = state.deskId;
+  if (imagePollDesk !== id) {
+    imagePollDesk = id;
+    pendingLocalImage = null;
+  }
+  while (ticket === imageDownloadPoll && state.view === "desk" && state.deskId === id) {
+    try {
+      const r = await fetch(`/api/desks/${id}/image-downloads`, { credentials: "same-origin" });
+      if (ticket !== imageDownloadPoll) return;
+      if (r.status === 401 && state.me) {
+        state.me = null;
+        setHash("/login");
+        return;
+      }
+      if (!r.ok) {
+        await new Promise((ok) => setTimeout(ok, 1500));
+        continue;
+      }
+      const data = await r.json().catch(() => ({}));
+      const files = Array.isArray(data.files) ? data.files : [];
+      const fresh = files.filter((f) => f.auto && f.id && !savedImageIds.has(f.id));
+      for (const f of fresh) {
+        savedImageIds.add(f.id);
+        const file = await fetch(`/api/desks/${id}/image-downloads/${encodeURIComponent(f.id)}`, { credentials: "same-origin" });
+        if (!file.ok) continue;
+        const blob = await file.blob();
+        const name = filenameFromDisposition(file.headers.get("content-disposition")) || f.name || "ChatGPT-image.png";
+        saveBlobLocally(blob, name);
+      }
+      if (fresh.length) toast("图片已开始下载到本机。若没有弹出，再点「下载图片」");
+    } catch {
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
+  }
+}
+
 
 async function startChooserPoll() {
   const ticket = ++chooserPoll;
