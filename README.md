@@ -108,6 +108,15 @@ The clipboard is two-way between your machine and the desk on the exclusive VNC 
 
 Tab seats exist only when multi-user / CDP is on for that account. They cannot use the X11 clip relay — it is one clipboard for the whole desktop, not one per tab. They paste text via CDP `Input.insertText` and images (png/jpeg/webp) via a synthetic `ClipboardEvent` on `document.activeElement`. Click the composer first; if nothing is focused the UI says to click the input. They never write the shared X11 clipboard.
 
+## Downloading a generated image
+
+After ChatGPT generates an image on the desk, save it in **the browser you are using**.
+
+1. Click **下载图片** in the gateway top bar. The gateway reads the latest large generated image from the open chat. The address may be a page `blob:`, a `data:image`, or an `oaiusercontent` / ChatGPT file CDN URL. Once the bytes are a complete png, jpeg, webp, or gif, your browser starts the save. That path does not treat a server copy as the file you receive.
+2. ChatGPT's own download or save on the image: if the click reaches Chromium's download manager, the file lands in `/config/gpc-downloads` inside the desk container and the gateway then starts a download in your browser. If ChatGPT never calls the download manager (the image stays a blob or CDN URL in the page), the same click reads that image in the page and hands it to your browser. If nothing saves, click **下载图片** again.
+
+The top bar takes the latest generated image in the current chat. For an earlier one, open that image or use ChatGPT's download on it.
+
 ## Sharing and memory isolation
 
 There are two ways to share a chat. The basic path needs no automation: click ChatGPT's own Share inside the page and copy — the link reaches your local clipboard through the clipboard relay. With **page assist** on, the top bar gains a Share button that the gateway clicks for you, handing you the link directly.
