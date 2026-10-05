@@ -846,6 +846,8 @@ label.switch-row { cursor: pointer; }
   .cardgrid { grid-template-columns: 1fr; }
   .chrome { grid-template-columns: auto 1fr auto; }
   .chrome-mid { justify-self: start; }
+  .chrome-end { gap: 6px; }
+  #download-image, #upload-files { padding: 0 10px; }
   .who { display: none; }
   .clip-sep, .clip-keys { display: none; }
   .clip-chip { padding-right: 12px; }

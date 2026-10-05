@@ -19,6 +19,20 @@ import { startSeatScreencast } from "../lib/screencast.mjs";
 import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
 import { applyDeskUpload, armFileChooser, createChooserRegistry, FILE_TOO_BIG, FILE_UPLOAD_FAIL } from "../lib/file-chooser.mjs";
 import { stageDeskUpload } from "../lib/desk-files.mjs";
+import {
+  GPT_IMAGE_BINDING,
+  attachmentDisposition,
+  decodeCapturedImage,
+  gptImageCaptureExpression,
+  installGptImageHook,
+} from "../lib/gpt-image.mjs";
+import {
+  armBrowserImageDownloads,
+  createImageDownloadHub,
+  downloadDirSetupCommand,
+  imageBytesReady,
+  readContainerDownload,
+} from "../lib/image-downloads.mjs";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -54,6 +68,8 @@ const seatWss = new WebSocketServer({ noServer: true });
 const loginLimiter = createLoginLimiter({ maxFails: 10, windowMs: 15 * 60 * 1000 });
 const deskCdpLocks = new Map();
 const choosers = createChooserRegistry();
+const imageDownloads = createImageDownloadHub();
+const imageBridges = new Map();
 const fileWatches = new Map();
 const FILE_BODY_MAX = 16 * 1024 * 1024;
 /** Yield so a second /open can create a tab before assist grabs the debugger. */
@@ -255,6 +271,160 @@ async function watchExclusiveFileChooser(deskId, user) {
       choosers.clear(deskId, user.id);
     },
   });
+}
+
+function noteDeskActor(deskId, userId) {
+  imageDownloads.noteActor(deskId, userId);
+}
+
+function acceptImageBinding(deskId, payload) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(payload || ""));
+  } catch {
+    return;
+  }
+  const image = decodeCapturedImage(parsed);
+  if (!image.ok) return;
+  if (!imageDownloads.acceptClickCapture(deskId, image.bytes.length, image.filename)) return;
+  const occupants = presence.list(deskId).map((v) => v.id);
+  imageDownloads.completeBytes(deskId, image, { occupants, via: "click" });
+}
+
+async function ensureDeskImageBridge(deskId) {
+  const existing = imageBridges.get(deskId);
+  if (existing?.armed || existing?.starting) return;
+  const placeholder = { starting: true };
+  imageBridges.set(deskId, placeholder);
+  try {
+    const ready = await ensureExclusiveFilePipe(deskId);
+    if (!ready) {
+      if (imageBridges.get(deskId) === placeholder) imageBridges.delete(deskId);
+      return;
+    }
+    try {
+      await docker.exec(deskContainerName(deskId), downloadDirSetupCommand());
+    } catch {
+      /* directory is best-effort; the page capture path does not need it */
+    }
+    const cdp = await deskBrowsers.get(deskId);
+    const armed = await armBrowserImageDownloads({
+      send: (method, params) => cdp.send(method, params),
+      on: (fn) => cdp.on(fn),
+      onBegin: (meta) => imageDownloads.noteBrowserSave(deskId, meta),
+      onFile: (meta) => {
+        const occupants = presence.list(deskId).map((v) => v.id);
+        readContainerDownload(docker, deskContainerName(deskId), meta.containerPath, {
+          accept: imageBytesReady,
+        })
+          .then((bytes) => {
+            imageDownloads.noteBrowserSave(deskId, {
+              filename: meta.filename,
+              state: "completed",
+              receivedBytes: bytes.length,
+              totalBytes: bytes.length,
+            });
+            imageDownloads.completeBytes(
+              deskId,
+              { bytes, filename: meta.filename },
+              { occupants, via: "chromium" },
+            );
+          })
+          .catch(() => {});
+      },
+    });
+    let release = async () => {};
+    let off = () => {};
+    try {
+      const targetId = await findChatGptTargetId(deskId);
+      if (targetId) {
+        const attached = await attachSeatTarget(deskId, targetId);
+        release = () => attached.release?.();
+        await installGptImageHook(
+          (method, params, sid) => attached.cdp.send(method, params, sid ?? attached.sessionId),
+          attached.sessionId,
+        );
+        off = attached.cdp.on((msg) => {
+          if (msg.sessionId && msg.sessionId !== attached.sessionId) return;
+          if (msg.method === "Runtime.bindingCalled" && msg.params?.name === GPT_IMAGE_BINDING) {
+            acceptImageBinding(deskId, msg.params.payload);
+          }
+          if (msg.method === "Page.frameNavigated" && !msg.params?.frame?.parentId) {
+            installGptImageHook(
+              (method, params, sid) => attached.cdp.send(method, params, sid ?? attached.sessionId),
+              attached.sessionId,
+            ).catch(() => {});
+          }
+        });
+      }
+    } catch {
+      /* ChatGPT's own button still works when the download manager fires */
+    }
+    if (imageBridges.get(deskId) !== placeholder) {
+      armed.dispose?.();
+      try {
+        off();
+      } catch {
+        /* ignore */
+      }
+      Promise.resolve(release()).catch(() => {});
+      return;
+    }
+    const bridge = {
+      armed: true,
+      dispose() {
+        try {
+          armed.dispose?.();
+        } catch {
+          /* ignore */
+        }
+        try {
+          off();
+        } catch {
+          /* ignore */
+        }
+        Promise.resolve(release()).catch(() => {});
+      },
+    };
+    imageBridges.set(deskId, bridge);
+    cdp.ws?.addEventListener?.("close", () => {
+      if (imageBridges.get(deskId) === bridge) imageBridges.delete(deskId);
+    });
+  } catch {
+    if (imageBridges.get(deskId) === placeholder) imageBridges.delete(deskId);
+  }
+}
+
+async function captureDeskGptImage(deskId, user) {
+  const seat = seats.ofUser(deskId, user.id);
+  let targetId = seat?.mode === "tab" ? seat.targetId : "";
+  if (!targetId) {
+    const ready = await ensureExclusiveFilePipe(deskId);
+    if (!ready) {
+      const err = new Error("桌面还没准备好，稍后再下载图片");
+      err.status = 502;
+      throw err;
+    }
+    targetId = await findChatGptTargetId(deskId);
+  }
+  if (!targetId) {
+    const err = new Error("还没打开 ChatGPT");
+    err.status = 502;
+    throw err;
+  }
+  const raw = await evaluateOnTarget(deskId, targetId, gptImageCaptureExpression(), 28000);
+  return decodeCapturedImage(raw);
+}
+
+function sendImageDownload(res, image) {
+  res.writeHead(200, {
+    "content-type": image.mime,
+    "content-disposition": attachmentDisposition(image.filename),
+    "content-length": String(image.bytes.length),
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  res.end(image.bytes);
 }
 
 async function readFileUploadBody(req) {
@@ -647,6 +817,8 @@ async function handleApi(req, res, url, sess) {
     }
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
+    noteDeskActor(id, sess.user.id);
+    if (seat?.mode === "vnc") ensureDeskImageBridge(id).catch(() => {});
     if (cdp && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
     if (cdp) kickOnboard(id, sess.user, seat?.targetId);
     if (seat?.mode === "vnc") {
@@ -713,6 +885,41 @@ async function handleApi(req, res, url, sess) {
     const out = await handleDeskFileUpload(id, sess.user, body);
     if (!out.ok) return json(res, out.status || 502, { error: out.error || FILE_UPLOAD_FAIL });
     return json(res, 200, { ok: true, kind: out.kind || (out.cancelled ? "cancel" : "file") });
+  }
+  const gptImage = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/gpt-image$/);
+  if (gptImage && req.method === "POST") {
+    const id = gptImage[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    noteDeskActor(id, sess.user.id);
+    try {
+      const image = await captureDeskGptImage(id, sess.user);
+      if (!image.ok) return json(res, image.status || 404, { error: image.error || "无法读取这张生成图" });
+      sendImageDownload(res, image);
+      return;
+    } catch (e) {
+      const message = String(e.message || "");
+      const friendly = /桌面还没准备好|还没打开 ChatGPT|图片|无法读取/.test(message) ? message : "无法读取这张生成图";
+      return json(res, e.status || 502, { error: friendly });
+    }
+  }
+  const imageFile = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/image-downloads\/([A-Za-z0-9-]{8,80})$/);
+  if (imageFile && req.method === "GET") {
+    const id = imageFile[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const item = imageDownloads.get(id, imageFile[2]);
+    if (!item?.bytes?.length) return json(res, 404, { error: "图片还没准备好" });
+    sendImageDownload(res, { bytes: item.bytes, mime: item.mime, filename: item.name });
+    return;
+  }
+  const imageList = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/image-downloads$/);
+  if (imageList && req.method === "GET") {
+    const id = imageList[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    noteDeskActor(id, sess.user.id);
+    ensureDeskImageBridge(id).catch(() => {});
+    const waitMs = url.searchParams.get("wait") === "0" ? 0 : 20_000;
+    await imageDownloads.wait(id, sess.user.id, waitMs);
+    return json(res, 200, { files: imageDownloads.listFor(id, sess.user.id, { consumeAuto: true }) });
   }
   const chooserApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/file-chooser$/);
   if (chooserApi && req.method === "GET") {

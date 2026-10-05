@@ -66,8 +66,13 @@ if "gpc-jail-keys" not in text:
 dst.write_text(text, encoding="utf-8")
 PY
 
+mkdir -p /etc/chromium/policies/managed /config/gpc-downloads
+cat > /etc/chromium/policies/managed/gpc-downloads.json <<'EOF'
+{"DownloadDirectory":"/config/gpc-downloads","PromptForDownload":false}
+EOF
 chown "${PUID:-1000}:${PGID:-1000}" \
     /config/.config/openbox/autostart \
     /config/.config/openbox/rc.xml \
     /config/Desktop \
-    /config/chromium 2>/dev/null || true
+    /config/chromium \
+    /config/gpc-downloads 2>/dev/null || true
