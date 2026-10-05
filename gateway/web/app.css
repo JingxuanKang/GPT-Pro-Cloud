@@ -787,6 +787,50 @@ label.switch-row { cursor: pointer; }
   flex: 0 0 auto;
   color: var(--ink);
 }
+.clip-offer {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: 16px;
+  box-shadow: var(--shadow-2);
+}
+.clip-offer img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--tile);
+  flex: 0 0 auto;
+}
+.clip-offer-copy { min-width: 0; flex: 1; }
+.clip-offer-copy b { display: block; font-size: 13px; font-weight: 600; }
+.clip-offer-copy p { margin: 2px 0 0; color: var(--ink-2); font-size: 12px; }
+.clip-offer-url {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 8px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--ink);
+}
+.clip-offer-acts { display: flex; gap: 6px; flex: 0 0 auto; }
+.clip-offer .btn { height: 32px; padding: 0 12px; font-size: 12.5px; }
+@media (max-width: 720px) {
+  .clip-offer { flex-wrap: wrap; align-items: flex-start; }
+  .clip-offer-acts { width: 100%; flex-wrap: wrap; }
+}
 .toast .ico-img { width: 18px; height: 18px; color: #fff; }
 .toast {
   position: fixed;

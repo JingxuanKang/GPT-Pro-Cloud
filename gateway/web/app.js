@@ -429,7 +429,7 @@ function renderSettings() {
     <section class="panel">
       <div class="panel-head">
         <b>复制粘贴</b>
-        <em>在桌面画面里直接 ⌘C / ⌘V，双向生效。独占 VNC 走整桌剪贴板（文字和截图）。</em>
+        <em>在桌面画面里直接 ⌘C / ⌘V，双向生效。独占 VNC 走整桌剪贴板（文字和截图）。生成的图片和图片分享链接若没进本机剪贴板，画面下方会给出「复制到本机」和「下载」。</em>
       </div>
     </section>
     <section class="panel">
@@ -534,9 +534,200 @@ async function copyLastToLocal() {
   if (!lastClip) return false;
   if (lastClip.kind === "image") {
     const blob = new Blob([lastClip.body], { type: lastClip.mime || "image/png" });
-    return writeToLocal("", blob);
+    const png = /png/i.test(blob.type) ? blob : await blobAsPng(blob);
+    return writeToLocal("", png || blob);
   }
   return writeToLocal(lastClip.text || "", null);
+}
+
+function clientShareUrl(text) {
+  const m = String(text || "").match(
+    /https:\/\/(?:(?:chatgpt\.com|chat\.openai\.com)\/(?:share|s)\/[A-Za-z0-9_-]+(?:[/?#][^\s"'<>]*)?|(?:files\.)?oaiusercontent\.com\/[^\s"'<>]+)/i,
+  );
+  return m ? m[0].replace(/[),.;]+$/g, "") : "";
+}
+
+function bytesKey(buf) {
+  const u = buf instanceof Uint8Array ? buf : new Uint8Array(buf || 0);
+  let s = String(u.length);
+  const n = Math.min(u.length, 64);
+  for (let i = 0; i < n; i++) s += "." + u[i];
+  return s;
+}
+
+async function blobAsPng(blob) {
+  if (!blob) return null;
+  if (/png/i.test(blob.type || "")) return blob;
+  try {
+    const bmp = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas");
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    canvas.getContext("2d").drawImage(bmp, 0, 0);
+    const png = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    return png || blob;
+  } catch {
+    return blob;
+  }
+}
+
+function downloadBytes(buf, mime, name) {
+  const blob = new Blob([buf], { type: mime || "application/octet-stream" });
+  const a = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function armPngWrite() {
+  if (!window.isSecureContext || !navigator.clipboard?.write || !window.ClipboardItem) return null;
+  let resolve;
+  let reject;
+  const blobPromise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  blobPromise.catch(() => {});
+  let writePromise;
+  try {
+    writePromise = navigator.clipboard
+      .write([new ClipboardItem({ "image/png": blobPromise })])
+      .then(() => true)
+      .catch(() => false);
+  } catch {
+    try { reject(new Error("clipboard")); } catch { /* ignore */ }
+    return null;
+  }
+  return {
+    fulfill(blob) {
+      try { resolve(blob); } catch { /* ignore */ }
+      return writePromise;
+    },
+    cancel() {
+      try { reject(new Error("cancel")); } catch { /* ignore */ }
+      return writePromise;
+    },
+  };
+}
+
+let clipOffer = null;
+let lastClipEtag = "";
+let clipWatchDesk = "";
+
+function paintClipOffer() {
+  const root = $("#clip-offer");
+  if (!root) return;
+  if (!clipOffer) {
+    root.hidden = true;
+    return;
+  }
+  const img = $("#clip-offer-img");
+  const title = $("#clip-offer-title");
+  const hint = $("#clip-offer-hint");
+  const url = $("#clip-offer-url");
+  const save = $("#clip-offer-save");
+  const copyBtn = $("#clip-offer-copy");
+  root.hidden = false;
+  const share = clipOffer.share || "";
+  if (clipOffer.kind === "image") {
+    if (img) {
+      img.hidden = false;
+      img.src = lastThumb || "";
+      img.alt = "生成的图片";
+    }
+    if (title) title.textContent = "生成的图片";
+    if (hint) hint.textContent = share
+      ? "图片和分享链接都已取出。复制被拦住时点下载，链接也可以直接选中。"
+      : "图片已取出。若浏览器拦住剪贴板，点下载保存到本机。";
+    if (save) save.hidden = false;
+    if (copyBtn) copyBtn.textContent = "复制到本机";
+  } else {
+    if (img) {
+      img.hidden = true;
+      img.removeAttribute("src");
+    }
+    if (title) title.textContent = "图片分享链接";
+    if (hint) hint.textContent = "链接已取出。点复制，或直接选中下面的地址。";
+    if (save) save.hidden = true;
+    if (copyBtn) copyBtn.textContent = "复制链接";
+  }
+  if (url) {
+    url.hidden = !share;
+    url.value = share;
+  }
+}
+
+function presentImage(buf, mime, share, { toastIt = true } = {}) {
+  const type = String(mime || "image/png").split(";")[0];
+  const key = bytesKey(buf) + "|" + (share || "");
+  const same = clipOffer?.key === key;
+  const blob = new Blob([buf], { type });
+  if (lastThumb) URL.revokeObjectURL(lastThumb);
+  lastThumb = URL.createObjectURL(blob);
+  lastClip = { kind: "image", body: buf, mime: type, text: share || "", thumb: lastThumb };
+  clipOffer = { kind: "image", buf, mime: type, share: share || "", key };
+  setChip("image");
+  paintClipOffer();
+  if (toastIt && !same) toast(share ? "图片和分享链接已取出" : "图片已取出，可复制或下载", "image");
+}
+
+function presentShare(url, { toastIt = true } = {}) {
+  const share = clientShareUrl(url);
+  if (!share) return false;
+  const key = "url:" + share;
+  const same = clipOffer?.key === key;
+  lastClip = { kind: "text", body: share, mime: "text/plain; charset=utf-8", text: share, thumb: "" };
+  clipOffer = { kind: "share", share, key };
+  lastPeeked = share;
+  setChip("text", share);
+  paintClipOffer();
+  if (toastIt && !same) toast("分享链接已取出，可复制或选中");
+  return true;
+}
+
+function onOfferCopy() {
+  if (!clipOffer) return;
+  if (clipOffer.kind !== "image") {
+    writeToLocal(clipOffer.share || "", null).then((ok) => {
+      toast(ok ? "链接已复制到本机" : "链接在输入框里，选中即可复制");
+      const field = $("#clip-offer-url");
+      field?.focus();
+      field?.select();
+    });
+    return;
+  }
+  const blob = new Blob([clipOffer.buf], { type: clipOffer.mime || "image/png" });
+  const finish = (out, ok) => {
+    if (ok) {
+      toast("图片已复制到本机", "image");
+      return;
+    }
+    const file = out || blob;
+    file.arrayBuffer().then((buf) => {
+      downloadBytes(buf, file.type || "image/png", "chatgpt-image.png");
+      toast("浏览器拦住了剪贴板，已开始下载图片", "image");
+    });
+  };
+  if (/png/i.test(blob.type || "")) {
+    writeToLocal("", blob).then((ok) => finish(blob, ok));
+    return;
+  }
+  const early = armPngWrite();
+  blobAsPng(blob).then((png) => {
+    const out = png || blob;
+    const pending = early ? early.fulfill(out) : writeToLocal("", out);
+    return pending.then((ok) => finish(out, ok));
+  });
+}
+
+function onOfferSave() {
+  if (clipOffer?.kind !== "image" || !clipOffer.buf) return;
+  downloadBytes(clipOffer.buf, clipOffer.mime || "image/png", "chatgpt-image.png");
+  toast("已开始下载图片", "image");
 }
 
 function renderDesk() {
@@ -560,6 +751,7 @@ function renderDesk() {
       </div>
       <div class="chrome-end">
         ${deskCdpOn(state.deskId) ? `<button type="button" class="chrome-btn" id="share-chat">${ICO.share}<span>分享</span></button>` : ""}
+        <button type="button" class="chrome-btn" id="take-image">${ICO.image}<span>取图片</span></button>
         <button type="button" class="chrome-btn" id="upload-files">${ICO.upload}<span>上传</span></button>
         <button type="button" class="clip-chip" id="clip-chip"></button>
       </div>
@@ -569,6 +761,19 @@ function renderDesk() {
       <input type="file" id="os-files" multiple hidden accept=".pdf,.doc,.docx,.txt,image/*" />
       <div class="frame-wait" id="frame-wait">${MARK}</div>
       ${surface}
+      <div class="clip-offer" id="clip-offer" hidden>
+        <img id="clip-offer-img" alt="">
+        <div class="clip-offer-copy">
+          <b id="clip-offer-title"></b>
+          <p id="clip-offer-hint"></p>
+          <input id="clip-offer-url" class="clip-offer-url" readonly hidden spellcheck="false" aria-label="分享链接">
+        </div>
+        <div class="clip-offer-acts">
+          <button type="button" class="btn" id="clip-offer-copy">复制到本机</button>
+          <button type="button" class="btn ghost" id="clip-offer-save">下载图片</button>
+          <button type="button" class="btn ghost" id="clip-offer-x">关闭</button>
+        </div>
+      </div>
     </div>
   </div>`;
 }
@@ -651,23 +856,12 @@ function dropPresence() {
   state.seatId = null;
 }
 
-function isShareLink(text) {
-  return /^https:\/\/chatgpt\.com\/share\/[A-Za-z0-9-]+/i.test(String(text || "").trim());
-}
-
 async function adoptDeskText(text, quiet) {
-  const t = String(text || "").trim();
-  if (!t) return false;
-  const url = isShareLink(t) ? t.split(/\s+/)[0] : t;
-  if (lastPeeked === url || lastClip?.text === url) return false;
-  lastPeeked = url;
-  lastClip = { kind: "text", body: url, mime: "text/plain; charset=utf-8", text: url, thumb: "" };
-  setChip("text", url);
-  const ok = await writeToLocal(url, null);
-  if (!quiet) {
-    toast(isShareLink(url) ? ok ? "分享链接已复制" : "链接已记下，点格子拷到本机" : ok ? "已拷到本机" : "已记下，点格子拷到本机");
-  }
-  return true;
+  const url = clientShareUrl(text);
+  if (!url) return false;
+  const known = clipOffer?.share === url;
+  presentShare(url, { toastIt: !quiet && !known });
+  return writeToLocal(url, null);
 }
 
 let seatWs = null;
@@ -870,8 +1064,17 @@ function bindDesk() {
   } else {
     return;
   }
-  lastPeeked = "";
-  setChip();
+  if (clipWatchDesk !== state.deskId) {
+    clipWatchDesk = state.deskId || "";
+    clipOffer = null;
+    lastClip = null;
+    lastClipEtag = "";
+    lastPeeked = "";
+    if (lastThumb) URL.revokeObjectURL(lastThumb);
+    lastThumb = "";
+  }
+  if (clipOffer) paintClipOffer();
+  else setChip();
   const chip = $("#clip-chip");
   if (chip)
     chip.onclick = async () => {
@@ -881,6 +1084,18 @@ function bindDesk() {
       }
       const ok = await copyLastToLocal();
       toast(ok ? lastClip.kind === "image" ? "图片已拷到本机" : "已拷到本机" : "没拷出去，再点一次", lastClip.kind);
+    };
+  const takeBtn = $("#take-image");
+  if (takeBtn) takeBtn.onclick = () => onTakeImage(takeBtn);
+  const offerCopy = $("#clip-offer-copy");
+  if (offerCopy) offerCopy.onclick = () => onOfferCopy();
+  const offerSave = $("#clip-offer-save");
+  if (offerSave) offerSave.onclick = () => onOfferSave();
+  const offerClose = $("#clip-offer-x");
+  if (offerClose)
+    offerClose.onclick = () => {
+      clipOffer = null;
+      paintClipOffer();
     };
   const uploadBtn = $("#upload-files");
   if (uploadBtn)
@@ -921,21 +1136,62 @@ function bindDesk() {
   peekTimer = setInterval(async () => {
     if (state.view !== "desk" || !state.deskId) return;
     try {
-      const r = await fetch(`/api/desks/${state.deskId}/peek`, { credentials: "same-origin" });
+      const r = await fetch(`/api/desks/${state.deskId}/peek`, {
+        credentials: "same-origin",
+        headers: lastClipEtag ? { "if-none-match": lastClipEtag } : {},
+      });
       if (r.status === 401 && state.me) {
         state.me = null;
         setHash("/login");
         return;
       }
-      if (!r.ok) return;
+      if (r.status === 204 || !r.ok) return;
+      const etag = r.headers.get("etag") || "";
+      if (etag) lastClipEtag = etag;
       const mime = r.headers.get("content-type") || "";
-      if (!mime.startsWith("text/")) return;
+      const share = clientShareUrl(r.headers.get("x-gpc-share") || "");
+      if (mime.startsWith("image/")) {
+        const buf = await r.arrayBuffer();
+        if (buf.byteLength) presentImage(buf, mime, share);
+        return;
+      }
       const text = (await r.text()).trim();
-      if (isShareLink(text)) await adoptDeskText(text);
+      const url = share || clientShareUrl(text);
+      if (url) presentShare(url);
     } catch {
       /* ignore */
     }
   }, 2000);
+}
+
+async function onTakeImage(btn) {
+  if (!state.deskId) return;
+  const early = armPngWrite();
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/desks/${state.deskId}/image`, { method: "POST", credentials: "same-origin" });
+    if (!r.ok) {
+      early?.cancel();
+      const data = await r.json().catch(() => ({}));
+      toast(data.error || "没找到图片");
+      return;
+    }
+    const mime = (r.headers.get("content-type") || "image/png").split(";")[0];
+    const share = clientShareUrl(r.headers.get("x-gpc-share") || "");
+    const buf = await r.arrayBuffer();
+    const blob = new Blob([buf], { type: mime });
+    const png = /png/i.test(mime) ? blob : await blobAsPng(blob);
+    const copied = early ? await early.fulfill(png || blob) : false;
+    const out = png || blob;
+    const bytes = out === blob ? buf : await out.arrayBuffer();
+    presentImage(bytes, out.type || mime, share, { toastIt: false });
+    toast(copied ? "图片已复制到本机" : "图片已取出。点「复制到本机」，若浏览器拦住剪贴板就点「下载」。", "image");
+  } catch {
+    early?.cancel();
+    toast("没找到图片");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function ensureOsFileInput() {
@@ -1084,40 +1340,51 @@ async function sendDeskPaste(body, mime) {
   return { ok: true };
 }
 
-async function copyFromDesk() {
+async function copyFromDesk(early) {
   const id = state.deskId;
-  if (!id) return false;
+  if (!id) {
+    early?.cancel();
+    return false;
+  }
   setChip("copying");
   const r = await fetch(`/api/desks/${id}/copy`, { method: "POST", credentials: "same-origin" });
   if (!r.ok) {
+    early?.cancel();
     setChip("waiting");
     toast("没复制到");
     return false;
   }
-  const mime = r.headers.get("content-type") || "text/plain";
+  const mime = (r.headers.get("content-type") || "text/plain").split(";")[0];
+  const share = clientShareUrl(r.headers.get("x-gpc-share") || "");
   const buf = await r.arrayBuffer();
   if (mime.startsWith("image/")) {
     const blob = new Blob([buf], { type: mime });
-    const file = new File([blob], "image.png", { type: mime });
-    if (lastThumb) URL.revokeObjectURL(lastThumb);
-    lastThumb = URL.createObjectURL(file);
-    lastClip = { kind: "image", body: buf, mime, text: "", thumb: lastThumb };
-    setChip("image");
-    const ok = await writeToLocal("", blob);
-    toast(ok ? "图片已复制到本机" : "已记下图片，点顶栏图标拷到本机", "image");
-    return ok;
+    const png = /png/i.test(mime) ? blob : await blobAsPng(blob);
+    const out = png || blob;
+    const copied = early ? await early.fulfill(out) : await writeToLocal("", out);
+    const bytes = out === blob ? buf : await out.arrayBuffer();
+    presentImage(bytes, out.type || mime, share, { toastIt: false });
+    toast(copied ? "图片已复制到本机" : "图片已取出。点「复制到本机」，或点「下载」。", "image");
+    return copied;
   }
+  early?.cancel();
   const text = new TextDecoder().decode(buf);
-  if (!text) {
+  const shareText = share || clientShareUrl(text);
+  if (!text.trim() && !shareText) {
     setChip("waiting");
     toast("没有选中的内容");
     return false;
   }
-  lastClip = { kind: "text", body: text, mime: "text/plain; charset=utf-8", text, thumb: "" };
-  setChip("text", text);
-  const ok = await writeToLocal(text, null);
-  const preview = text.replace(/\s+/g, " ").trim().slice(0, 18);
-  toast(ok ? `已复制到本机「${preview}${text.trim().length > 18 ? "…" : ""}」` : "已记下，点顶栏即可拷到本机");
+  if (shareText && (!text.trim() || text.trim().split(/\s+/)[0] === shareText || clientShareUrl(text) === shareText)) {
+    presentShare(shareText, { toastIt: false });
+  } else {
+    lastClip = { kind: "text", body: text, mime: "text/plain; charset=utf-8", text, thumb: "" };
+    setChip("text", text);
+  }
+  const shown = (shareText && text.trim() === shareText ? shareText : text).replace(/\s+/g, " ").trim();
+  const ok = await writeToLocal(shown, null);
+  const preview = shown.slice(0, 18);
+  toast(ok ? `已复制到本机「${preview}${shown.length > 18 ? "…" : ""}」` : "已记下，点「复制链接」或顶栏即可拷到本机");
   return ok;
 }
 
@@ -1189,7 +1456,8 @@ function bindClipboard(iframe) {
       if (isCopyChord(e)) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        copyFromDesk().catch(() => {});
+        const early = armPngWrite();
+        copyFromDesk(early).catch(() => early?.cancel());
         return;
       }
       if (!isPasteChord(e)) return;
@@ -1292,7 +1560,8 @@ function bindTabClipboard() {
       if (state.view !== "desk" || state.deskMode !== "tab") return;
       if (!isCopyChord(e)) return;
       e.preventDefault();
-      copyFromDesk().catch(() => {});
+      const early = armPngWrite();
+      copyFromDesk(early).catch(() => early?.cancel());
     },
     true,
   );

@@ -2,7 +2,10 @@
 """Accept a paste from the gateway and put it on the X clipboard, then Ctrl+V."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
+import re
 import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -47,37 +50,93 @@ def env() -> dict[str, str]:
     return out
 
 
-def clip_out() -> tuple[str, bytes]:
-    e = env()
-    targets = subprocess.run(
-        ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
+SHARE_RE = re.compile(
+    r"https://(?:(?:chatgpt\.com|chat\.openai\.com)/(?:share|s)/[A-Za-z0-9_-]+(?:[/?#][^\s\"'<>]*)?|(?:files\.)?oaiusercontent\.com/[^\s\"'<>]+)",
+    re.I,
+)
+
+
+def extract_share_url(text: str) -> str:
+    match = SHARE_RE.search(text or "")
+    if not match:
+        return ""
+    return match.group(0).rstrip(").,;")
+
+
+def clip_blank(mime: str, data: bytes) -> bool:
+    if not data:
+        return True
+    if mime.startswith("text/") and not data.strip():
+        return True
+    return False
+
+
+def prefer_clip(before: tuple[str, bytes, str], after: tuple[str, bytes, str]) -> tuple[str, bytes, str]:
+    """Keep a previous image when Ctrl+C lands on an empty selection."""
+    if clip_blank(after[0], after[1]) and not clip_blank(before[0], before[1]):
+        return before
+    return after
+
+
+def clip_etag(data: bytes, share: str) -> str:
+    digest = hashlib.sha256(data + b"\0" + share.encode("utf-8", "replace")).hexdigest()[:16]
+    return f'"xclip-{digest}"'
+
+
+def _xclip(args: list[str], timeout: float = 3) -> bytes:
+    return subprocess.run(
+        ["xclip", "-selection", "clipboard", *args],
         capture_output=True,
-        env=e,
-        timeout=3,
-        check=False,
-    ).stdout.decode("utf-8", "replace")
-    if "image/png" in targets or "image/jpeg" in targets:
-        mime = "image/png" if "image/png" in targets else "image/jpeg"
-        img = subprocess.run(
-            ["xclip", "-selection", "clipboard", "-t", mime, "-o"],
-            capture_output=True,
-            env=e,
-            timeout=5,
-            check=False,
-        ).stdout
-        if img:
-            return mime, img
-    text = subprocess.run(
-        ["xclip", "-selection", "clipboard", "-o"],
-        capture_output=True,
-        env=e,
-        timeout=3,
+        env=env(),
+        timeout=timeout,
         check=False,
     ).stdout
-    return "text/plain; charset=utf-8", text
 
 
-def grab() -> tuple[str, bytes]:
+def html_data_image(raw: bytes) -> tuple[str, bytes] | None:
+    text = raw.decode("utf-8", "replace")
+    match = re.search(r"data:image/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=\s]+)", text, re.I)
+    if not match:
+        return None
+    kind = match.group(1).lower()
+    mime = "image/jpeg" if kind in ("jpeg", "jpg") else f"image/{kind}"
+    try:
+        data = base64.b64decode(re.sub(r"\s+", "", match.group(2)), validate=False)
+    except Exception:
+        return None
+    if not data or len(data) > MAX:
+        return None
+    return mime, data
+
+
+def clip_out() -> tuple[str, bytes, str]:
+    targets = _xclip(["-t", "TARGETS", "-o"]).decode("utf-8", "replace")
+    image = b""
+    mime = ""
+    for candidate in ("image/png", "image/jpeg", "image/webp"):
+        if candidate in targets:
+            blob = _xclip(["-t", candidate, "-o"], timeout=5)
+            if blob:
+                image = blob
+                mime = candidate
+                break
+    text = _xclip(["-o"])
+    share = extract_share_url(text.decode("utf-8", "replace"))
+    if "text/html" in targets and (not share or not image):
+        html = _xclip(["-t", "text/html", "-o"], timeout=5)
+        if not share:
+            share = extract_share_url(html.decode("utf-8", "replace"))
+        if not image:
+            found = html_data_image(html)
+            if found:
+                mime, image = found
+    if image:
+        return mime, image, share
+    return "text/plain; charset=utf-8", text, share
+
+
+def grab() -> tuple[str, bytes, str]:
+    before = clip_out()
     e = env()
     subprocess.run(
         ["xdotool", "key", "--clearmodifiers", "ctrl+c"],
@@ -87,8 +146,29 @@ def grab() -> tuple[str, bytes]:
         check=False,
         timeout=5,
     )
-    time.sleep(0.12)
-    return clip_out()
+    time.sleep(0.2)
+    return prefer_clip(before, clip_out())
+
+
+def _respond(handler: BaseHTTPRequestHandler, mime: str, data: bytes, share: str) -> None:
+    etag = clip_etag(data, share)
+    inm = handler.headers.get("If-None-Match")
+    if inm and inm == etag:
+        handler.send_response(204)
+        handler.send_header("ETag", etag)
+        handler.send_header("Cache-Control", "no-store")
+        handler.end_headers()
+        return
+    safe = share if share and share.isascii() and "\n" not in share and "\r" not in share else ""
+    handler.send_response(200)
+    handler.send_header("Content-Type", mime)
+    handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("ETag", etag)
+    handler.send_header("Cache-Control", "no-store")
+    if safe:
+        handler.send_header("X-Gpc-Share", safe)
+    handler.end_headers()
+    handler.wfile.write(data)
 
 
 def clip_in(data: bytes, mime: str) -> None:
@@ -123,12 +203,8 @@ def clip_in(data: bytes, mime: str) -> None:
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        mime, data = clip_out()
-        self.send_response(200)
-        self.send_header("Content-Type", mime)
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        mime, data, share = clip_out()
+        _respond(self, mime, data, share)
 
     def do_POST(self) -> None:
         if self.path.rstrip("/") == "/proxy":
@@ -181,13 +257,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         if self.path.rstrip("/") == "/grab":
-            mime, data = grab()
+            mime, data, share = grab()
             print(f"gpc-clipd grab mime={mime} bytes={len(data)}", flush=True)
-            self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            _respond(self, mime, data, share)
             return
         try:
             n = int(self.headers.get("Content-Length", "0"))
