@@ -95,6 +95,7 @@ const ICO = {
   userx: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM3.5 20c.7-3.6 3.4-5.5 6.5-5.5 1.1 0 2.1.2 3 .7M16 15l5 5M21 15l-5 5"/></svg>`,
   clip: `<svg class="ico-clip" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M9 4h6v3H9zM15 5h3a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h3"/></svg>`,
   upload: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 16V5M8 8.5 12 4.5 16 8.5M6 19h12"/></svg>`,
+  download: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 4v11M8 11.5 12 15.5 16 11.5M6 19h12"/></svg>`,
 };
 
 function greet() {
@@ -548,7 +549,7 @@ function renderDesk() {
   const surface = !state.seatId
     ? ""
     : tab
-      ? `<canvas id="seat-cast" class="seat-cast" tabindex="0" aria-label="ChatGPT"></canvas>`
+      ? `<canvas id="seat-cast" class="seat-cast" tabindex="0" aria-label="ChatGPT"></canvas><textarea id="seat-ime" class="seat-ime" autocomplete="off" autocapitalize="off" spellcheck="false" lang="zh-CN" aria-label="中文输入"></textarea>`
       : `<iframe src="${src}" allow="clipboard-read; clipboard-write; autoplay; microphone"></iframe>`;
   return `<div class="stage">
     <div class="chrome">
@@ -561,6 +562,8 @@ function renderDesk() {
       <div class="chrome-end">
         ${deskCdpOn(state.deskId) ? `<button type="button" class="chrome-btn" id="share-chat">${ICO.share}<span>分享</span></button>` : ""}
         <button type="button" class="chrome-btn" id="upload-files">${ICO.upload}<span>上传</span></button>
+        <button type="button" class="chrome-btn" id="download-files" aria-haspopup="menu">${ICO.download}<span>下载</span><i class="dl-count" id="dl-count" hidden></i></button>
+        <div class="download-menu" id="download-menu" hidden></div>
         <button type="button" class="clip-chip" id="clip-chip"></button>
       </div>
     </div>
@@ -641,6 +644,7 @@ function dropPresence() {
   stopPeek();
   stopSeatCast();
   stopChooserPoll();
+  stopDownloadPoll();
   if (!state.me) return;
   const uid = state.me.username;
   for (const id of Object.keys(state.presence)) {
@@ -672,6 +676,71 @@ async function adoptDeskText(text, quiet) {
 
 let seatWs = null;
 let seatResize = null;
+
+function createImePump(send) {
+  let timer = 0;
+  let queued = null;
+  let seq = 0;
+  const flush = (phase, text) => {
+    seq += 1;
+    send(phase, String(text || ""), seq);
+  };
+  return (phase, text) => {
+    if (phase === "update") {
+      queued = text ?? "";
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const t = queued;
+        queued = null;
+        flush("update", t);
+      }, 40);
+      return;
+    }
+    clearTimeout(timer);
+    queued = null;
+    flush(phase, text);
+  };
+}
+
+function imeKeySuppressed(e, quietUntil) {
+  if (!e) return false;
+  if (e.isComposing || e.keyCode === 229 || e.key === "Process" || e.key === "Unidentified") return true;
+  if (Date.now() < quietUntil && (e.key === "Enter" || e.key === " " || e.code === "Space")) return true;
+  return false;
+}
+
+function pinImeField(el, x, y) {
+  if (!el) return;
+  const left = Math.max(0, Math.round(Number(x) || 12));
+  const top = Math.max(0, Math.round(Number(y) || 12));
+  el.style.setProperty("left", `${left}px`, "important");
+  el.style.setProperty("top", `${top}px`, "important");
+}
+
+const VNC_IME_CSS = `#noVNC_keyboardinput{position:fixed!important;left:12px;top:12px;width:8em!important;min-width:8em!important;height:1.6em!important;min-height:1.6em!important;opacity:.02!important;overflow:visible!important;z-index:99999!important;font-size:16px!important;line-height:1.4!important;color:transparent!important;background:transparent!important;border:0!important;padding:0!important;margin:0!important;resize:none!important;pointer-events:none!important;}`;
+
+function enableKasmIme(win) {
+  const roots = [win?.UI, win?.ui, win];
+  const seen = new Set();
+  const stack = roots.filter(Boolean);
+  while (stack.length && seen.size < 80) {
+    const obj = stack.pop();
+    if (!obj || (typeof obj !== "object" && typeof obj !== "function") || seen.has(obj)) continue;
+    seen.add(obj);
+    try {
+      if ("enableIME" in obj && obj.enableIME !== true) obj.enableIME = true;
+    } catch {
+      /* ignore */
+    }
+    for (const key of ["rfb", "_rfb", "keyboard", "_keyboard"]) {
+      try {
+        if (obj[key]) stack.push(obj[key]);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
 
 function stopSeatCast() {
   if (seatWs) {
@@ -773,6 +842,50 @@ function bindSeatCast() {
     send({ type: "mouse", event: "mouseWheel", x: p.x, y: p.y, button: "none", deltaX: e.deltaX, deltaY: e.deltaY, modifiers: mods(e) });
   };
   canvas.oncontextmenu = (e) => e.preventDefault();
+  const ime = $("#seat-ime");
+  let imeQuietUntil = 0;
+  let imeCommittedAt = 0;
+  let forwardedKey = false;
+  const pushIme = createImePump((phase, text, seq) => send({ type: "ime", phase, text, seq }));
+  const focusIme = (e) => {
+    if (!ime) return;
+    pinImeField(ime, e?.offsetX ?? e?.clientX, e?.offsetY ?? e?.clientY);
+    try {
+      ime.focus({ preventScroll: true });
+    } catch {
+      ime.focus();
+    }
+  };
+  canvas.addEventListener("pointerdown", focusIme, true);
+  focusIme();
+  if (ime) {
+    ime.addEventListener("compositionstart", () => {
+      imeQuietUntil = 0;
+    });
+    ime.addEventListener("compositionupdate", (e) => {
+      pushIme("update", e.data || "");
+    });
+    ime.addEventListener("compositionend", (e) => {
+      const text = e.data || ime.value || "";
+      ime.value = "";
+      imeQuietUntil = Date.now() + 80;
+      imeCommittedAt = Date.now();
+      pushIme(text ? "commit" : "cancel", text);
+    });
+    ime.addEventListener("input", (e) => {
+      if (e.isComposing || e.inputType === "insertCompositionText") return;
+      if (forwardedKey || Date.now() - imeCommittedAt < 50) {
+        forwardedKey = false;
+        ime.value = "";
+        return;
+      }
+      const text = ime.value;
+      if (!text) return;
+      ime.value = "";
+      pushIme("commit", text);
+    });
+  }
+  const keyTarget = ime || canvas;
   const isSeatEscapeChord = (e) => {
     const cmd = e.ctrlKey || e.metaKey;
     const code = e.code || "";
@@ -786,21 +899,24 @@ function bindSeatCast() {
     if (e.shiftKey && (letter === "T" || letter === "I" || letter === "J" || letter === "C")) return true;
     return !e.altKey && (letter === "T" || letter === "N" || letter === "L" || letter === "W" || letter === "U");
   };
-  canvas.onkeydown = (e) => {
+  keyTarget.onkeydown = (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.code === "KeyV" || e.code === "KeyC")) return;
     if (isSeatEscapeChord(e)) {
       e.preventDefault();
       return;
     }
+    if (imeKeySuppressed(e, imeQuietUntil)) return;
     e.preventDefault();
+    forwardedKey = true;
     send({ type: "key", event: "keyDown", key: e.key, code: e.code, modifiers: mods(e) });
   };
-  canvas.onkeyup = (e) => {
+  keyTarget.onkeyup = (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.code === "KeyV" || e.code === "KeyC")) return;
     if (isSeatEscapeChord(e)) {
       e.preventDefault();
       return;
     }
+    if (imeKeySuppressed(e, imeQuietUntil)) return;
     send({ type: "key", event: "keyUp", key: e.key, code: e.code, modifiers: mods(e) });
   };
 
@@ -893,6 +1009,7 @@ function bindDesk() {
   bindDeskFileDrop();
   if (state.deskMode === "vnc") startChooserPoll();
   else stopChooserPoll();
+  startDownloadPoll();
   const shareBtn = $("#share-chat");
   if (shareBtn)
     shareBtn.onclick = async () => {
@@ -1030,6 +1147,102 @@ function stopChooserPoll() {
   chooserPoll += 1;
 }
 
+let downloadPoll = 0;
+const downloadedIds = new Set();
+
+function stopDownloadPoll() {
+  downloadPoll += 1;
+  const menu = $("#download-menu");
+  if (menu) menu.hidden = true;
+}
+
+function triggerLocalDownload(id, file) {
+  const a = document.createElement("a");
+  a.href = `/api/desks/${id}/downloads/${encodeURIComponent(file.id)}`;
+  a.download = file.name || "download";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function paintDownloadMenu(files) {
+  const menu = $("#download-menu");
+  const count = $("#dl-count");
+  if (count) {
+    const n = (files || []).length;
+    count.hidden = !n;
+    count.textContent = n > 9 ? "9+" : String(n || "");
+  }
+  if (!menu || menu.hidden) return;
+  if (!files?.length) {
+    menu.innerHTML = `<p class="empty">还没有可下载的文件。保存图片后会自动下载到这台电脑，也可以在这里再取一次。</p>`;
+    return;
+  }
+  menu.innerHTML = files
+    .map(
+      (f) =>
+        `<button type="button" data-dl="${esc(f.id)}" data-name="${esc(f.name)}">${ICO.download}<span>${esc(f.name)}</span></button>`,
+    )
+    .join("");
+  menu.querySelectorAll("[data-dl]").forEach((btn) => {
+    btn.onclick = () => {
+      const file = { id: btn.getAttribute("data-dl"), name: btn.getAttribute("data-name") || "download" };
+      triggerLocalDownload(state.deskId, file);
+      toast("已开始下载到本机");
+    };
+  });
+}
+
+async function startDownloadPoll() {
+  const ticket = ++downloadPoll;
+  const id = state.deskId;
+  let files = [];
+  const btn = $("#download-files");
+  const menu = $("#download-menu");
+  if (btn && menu) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      menu.hidden = !menu.hidden;
+      paintDownloadMenu(files);
+    };
+    if (document.documentElement.dataset.gpcDl !== "1") {
+      document.documentElement.dataset.gpcDl = "1";
+      document.addEventListener("click", (e) => {
+        if (e.target.closest?.("#download-files, #download-menu")) return;
+        const open = $("#download-menu");
+        if (open) open.hidden = true;
+      });
+    }
+  }
+  while (ticket === downloadPoll && state.view === "desk" && state.deskId === id) {
+    try {
+      const r = await fetch(`/api/desks/${id}/downloads`, { credentials: "same-origin" });
+      if (ticket !== downloadPoll) return;
+      if (r.status === 401 && state.me) {
+        state.me = null;
+        setHash("/login");
+        return;
+      }
+      if (!r.ok) {
+        await new Promise((ok) => setTimeout(ok, 1500));
+        continue;
+      }
+      const data = await r.json().catch(() => ({}));
+      files = Array.isArray(data.files) ? data.files : [];
+      paintDownloadMenu(files);
+      const fresh = files.filter((f) => f.auto && f.id && !downloadedIds.has(f.id));
+      for (const f of fresh) {
+        downloadedIds.add(f.id);
+        triggerLocalDownload(id, f);
+      }
+      if (fresh.length) toast(fresh.length > 1 ? "文件已开始下载到本机" : "已开始下载到本机。若没有弹出，点顶栏「下载」");
+    } catch {
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
+  }
+}
+
 async function startChooserPoll() {
   const ticket = ++chooserPoll;
   const id = state.deskId;
@@ -1135,9 +1348,23 @@ function bindClipboard(iframe) {
   doc.documentElement.dataset.gpcClip = "1";
 
   const st = doc.createElement("style");
-  st.textContent =
-    "#noVNC_keyboardinput{width:2px!important;height:2px!important;opacity:.01!important;overflow:hidden!important;}";
+  st.textContent = VNC_IME_CSS;
   (doc.head || doc.documentElement).appendChild(st);
+  const armIme = () => {
+    enableKasmIme(win);
+    bindVncIme(win, doc);
+    const kb = doc.getElementById("noVNC_keyboardinput");
+    if (kb) {
+      const left = parseFloat(kb.style.left);
+      if (!Number.isFinite(left) || left < 0) pinImeField(kb, 12, 12);
+    }
+    for (const lab of doc.querySelectorAll("label")) {
+      if (!/IME/i.test(lab.textContent || "")) continue;
+      const input = lab.querySelector("input") || (lab.htmlFor ? doc.getElementById(lab.htmlFor) : null);
+      if (input && input.type === "checkbox" && !input.checked) input.click();
+    }
+  };
+  armIme();
 
   const remember = (kind, body, mime, text, file) => {
     if (lastThumb) URL.revokeObjectURL(lastThumb);
@@ -1250,8 +1477,96 @@ function bindClipboard(iframe) {
     }
   };
   hookRfb();
-  const iv = setInterval(hookRfb, 400);
+  const iv = setInterval(() => {
+    hookRfb();
+    armIme();
+  }, 400);
   setTimeout(() => clearInterval(iv), 20000);
+}
+
+function bindVncIme(win, doc) {
+  const kb = doc.getElementById("noVNC_keyboardinput");
+  if (!kb || kb.dataset.gpcIme === "1") return;
+  kb.dataset.gpcIme = "1";
+  kb.setAttribute("lang", "zh-CN");
+  kb.setAttribute("autocomplete", "off");
+  pinImeField(kb, 12, 12);
+  const pump = createImePump((phase, text, seq) => {
+    const id = state.deskId;
+    if (!id || state.view !== "desk" || state.deskMode === "tab") return;
+    fetch(`/api/desks/${id}/ime`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ phase, text, seq }),
+    }).catch(() => {});
+  });
+  const swallow = (e) => e.stopImmediatePropagation();
+  let swallowInput = false;
+  kb.addEventListener(
+    "compositionstart",
+    (e) => {
+      swallowInput = true;
+      swallow(e);
+    },
+    true,
+  );
+  kb.addEventListener(
+    "compositionupdate",
+    (e) => {
+      swallow(e);
+      pump("update", e.data || "");
+    },
+    true,
+  );
+  kb.addEventListener(
+    "compositionend",
+    (e) => {
+      swallow(e);
+      swallowInput = true;
+      const text = e.data || "";
+      kb.value = "";
+      pump(text ? "commit" : "cancel", text);
+    },
+    true,
+  );
+  kb.addEventListener(
+    "input",
+    (e) => {
+      if (swallowInput || e.isComposing || e.inputType === "insertCompositionText") {
+        swallowInput = e.isComposing || e.inputType === "insertCompositionText";
+        swallow(e);
+      }
+    },
+    true,
+  );
+  kb.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.isComposing || e.keyCode === 229 || e.key === "Process") swallow(e);
+    },
+    true,
+  );
+  kb.addEventListener(
+    "keyup",
+    (e) => {
+      if (e.isComposing || e.keyCode === 229 || e.key === "Process") swallow(e);
+    },
+    true,
+  );
+  win.addEventListener(
+    "pointerdown",
+    (e) => {
+      pinImeField(kb, e.clientX, e.clientY);
+      enableKasmIme(win);
+      try {
+        kb.focus({ preventScroll: true });
+      } catch {
+        kb.focus();
+      }
+    },
+    true,
+  );
 }
 
 const workspaceBusy = new Set();
