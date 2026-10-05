@@ -106,6 +106,8 @@ Passwords are stored as per-user salted scrypt hashes. Sign-in is rate limited p
 
 The clipboard is two-way between your machine and the desk on the exclusive VNC path. Text and screenshots both work there (gpc-clipd / xclip). That path does not need the debug port.
 
+Generated images are different: ChatGPT's Copy button writes an image inside the remote Chromium, and noVNC only carries text, so the picture often never reaches your machine. The desk page keeps that image (and image share links such as `chatgpt.com/share/…` and `chatgpt.com/s/…`). A bar then offers **复制到本机** and **下载**. If the browser blocks image clipboard writes, download still saves the file. **取图片** pulls the latest generated image the same way.
+
 Tab seats exist only when multi-user / CDP is on for that account. They cannot use the X11 clip relay — it is one clipboard for the whole desktop, not one per tab. They paste text via CDP `Input.insertText` and images (png/jpeg/webp) via a synthetic `ClipboardEvent` on `document.activeElement`. Click the composer first; if nothing is focused the UI says to click the input. They never write the shared X11 clipboard.
 
 ## Sharing and memory isolation
