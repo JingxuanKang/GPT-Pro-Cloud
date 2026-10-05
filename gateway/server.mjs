@@ -13,12 +13,14 @@ import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskBrowserWs, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, targetExists } from "../lib/cdp.mjs";
+import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskBrowserWs, deskBrowsers, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, targetExists } from "../lib/cdp.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
 import { applyDeskUpload, armFileChooser, createChooserRegistry, FILE_TOO_BIG, FILE_UPLOAD_FAIL } from "../lib/file-chooser.mjs";
 import { stageDeskUpload } from "../lib/desk-files.mjs";
+import { applyImeCommands } from "../lib/ime.mjs";
+import { armBrowserDownloads, createDownloadHub, downloadDirSetupCommand, readContainerDownload, attachmentDisposition } from "../lib/downloads.mjs";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -54,7 +56,11 @@ const seatWss = new WebSocketServer({ noServer: true });
 const loginLimiter = createLoginLimiter({ maxFails: 10, windowMs: 15 * 60 * 1000 });
 const deskCdpLocks = new Map();
 const choosers = createChooserRegistry();
+const downloads = createDownloadHub();
 const fileWatches = new Map();
+const downloadArms = new Map();
+const imeChains = new Map();
+const imePipes = new Map();
 const FILE_BODY_MAX = 16 * 1024 * 1024;
 /** Yield so a second /open can create a tab before assist grabs the debugger. */
 const ONBOARD_YIELD_MS = 1500;
@@ -185,11 +191,15 @@ async function closeSeatTab(seat) {
 function stopFileWatch(userId) {
   const watch = fileWatches.get(userId);
   fileWatches.delete(userId);
+  const pipe = imePipes.get(userId);
+  imePipes.delete(userId);
+  imeChains.delete(userId);
   try {
     watch?.dispose?.();
   } catch {
     /* ignore */
   }
+  Promise.resolve(pipe?.release?.()).catch(() => {});
 }
 
 async function findChatGptTargetId(deskId) {
@@ -245,6 +255,8 @@ async function watchExclusiveFileChooser(deskId, user) {
   });
   fileWatches.set(user.id, {
     deskId,
+    targetId,
+    send: (method, params) => attached.cdp.send(method, params, attached.sessionId),
     dispose() {
       try {
         armed.dispose?.();
@@ -255,6 +267,81 @@ async function watchExclusiveFileChooser(deskId, user) {
       choosers.clear(deskId, user.id);
     },
   });
+}
+
+function noteDeskActor(deskId, userId) {
+  downloads.noteActor(deskId, userId);
+}
+
+async function imeSender(deskId, user) {
+  const watch = fileWatches.get(user.id);
+  if (watch?.deskId === deskId && typeof watch.send === "function") return watch.send;
+  const cached = imePipes.get(user.id);
+  if (cached?.deskId === deskId && typeof cached.send === "function") return cached.send;
+  const seat = seats.ofUser(deskId, user.id);
+  const targetId = seat?.targetId || (await findChatGptTargetId(deskId));
+  if (!targetId) {
+    const err = new Error("输入框还没准备好");
+    err.status = 502;
+    throw err;
+  }
+  const attached = await attachSeatTarget(deskId, targetId);
+  const send = (method, params) => attached.cdp.send(method, params, attached.sessionId);
+  imePipes.set(user.id, { deskId, send, release: attached.release });
+  return send;
+}
+
+async function applyDeskIme(deskId, user, body) {
+  noteDeskActor(deskId, user.id);
+  const seq = Number(body?.seq) || 0;
+  const state = imeChains.get(user.id) || { chain: Promise.resolve(), seq: 0 };
+  if (seq && seq < state.seq) return { ok: true, skipped: true };
+  if (seq) state.seq = seq;
+  const run = state.chain.then(async () => {
+    const send = await imeSender(deskId, user);
+    return applyImeCommands(send, body);
+  });
+  state.chain = run.then(() => {}, () => {});
+  imeChains.set(user.id, state);
+  return run;
+}
+
+async function ensureDeskDownloads(deskId) {
+  if (downloadArms.has(deskId)) return;
+  const placeholder = { starting: true, dispose() {} };
+  downloadArms.set(deskId, placeholder);
+  try {
+    const ready = await ensureExclusiveFilePipe(deskId);
+    if (!ready) {
+      if (downloadArms.get(deskId) === placeholder) downloadArms.delete(deskId);
+      return;
+    }
+    try {
+      await docker.exec(deskContainerName(deskId), downloadDirSetupCommand());
+      await sleep(400);
+    } catch {
+      /* directory is best-effort; CDP still reports the download */
+    }
+    const cdp = await deskBrowsers.get(deskId);
+    const armed = await armBrowserDownloads({
+      send: (method, params) => cdp.send(method, params),
+      on: (fn) => cdp.on(fn),
+      onFile: (meta) => {
+        const occupants = presence.list(deskId).map((v) => v.id);
+        downloads.complete(deskId, meta, { occupants });
+      },
+    });
+    if (downloadArms.get(deskId) !== placeholder) {
+      armed.dispose?.();
+      return;
+    }
+    downloadArms.set(deskId, armed);
+    cdp.ws?.addEventListener?.("close", () => {
+      if (downloadArms.get(deskId) === armed) downloadArms.delete(deskId);
+    });
+  } catch {
+    if (downloadArms.get(deskId) === placeholder) downloadArms.delete(deskId);
+  }
 }
 
 async function readFileUploadBody(req) {
@@ -647,6 +734,8 @@ async function handleApi(req, res, url, sess) {
     }
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
+    noteDeskActor(id, sess.user.id);
+    ensureDeskDownloads(id).catch(() => {});
     if (cdp && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
     if (cdp) kickOnboard(id, sess.user, seat?.targetId);
     if (seat?.mode === "vnc") {
@@ -662,6 +751,7 @@ async function handleApi(req, res, url, sess) {
   if (paste && req.method === "POST") {
     const id = paste[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    noteDeskActor(id, sess.user.id);
     const chunks = [];
     for await (const c of req) chunks.push(c);
     const body = Buffer.concat(chunks);
@@ -704,6 +794,7 @@ async function handleApi(req, res, url, sess) {
   if (filesApi && req.method === "POST") {
     const id = filesApi[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    noteDeskActor(id, sess.user.id);
     let body;
     try {
       body = await readFileUploadBody(req);
@@ -713,6 +804,54 @@ async function handleApi(req, res, url, sess) {
     const out = await handleDeskFileUpload(id, sess.user, body);
     if (!out.ok) return json(res, out.status || 502, { error: out.error || FILE_UPLOAD_FAIL });
     return json(res, 200, { ok: true, kind: out.kind || (out.cancelled ? "cancel" : "file") });
+  }
+  const imeApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/ime$/);
+  if (imeApi && req.method === "POST") {
+    const id = imeApi[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (e) {
+      return json(res, e.message === "body too large" ? 413 : 400, { error: "输入过长" });
+    }
+    try {
+      const out = await applyDeskIme(id, sess.user, body);
+      if (!out?.ok) return json(res, out?.status || 400, { error: out?.error || "无法输入" });
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      return json(res, e.status || 502, { error: e.message || "无法输入" });
+    }
+  }
+  const downloadFile = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/downloads\/([A-Za-z0-9-]{8,80})$/);
+  if (downloadFile && req.method === "GET") {
+    const id = downloadFile[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const item = downloads.get(id, downloadFile[2]);
+    if (!item) return json(res, 404, { error: "文件还没准备好" });
+    try {
+      const bytes = await readContainerDownload(docker, deskContainerName(id), item.containerPath);
+      res.writeHead(200, {
+        "content-type": item.mime || "application/octet-stream",
+        "content-disposition": attachmentDisposition(item.name),
+        "content-length": String(bytes.length),
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(bytes);
+      return;
+    } catch (e) {
+      return json(res, e.status || 404, { error: e.message || "文件还没准备好" });
+    }
+  }
+  const downloadList = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/downloads$/);
+  if (downloadList && req.method === "GET") {
+    const id = downloadList[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    ensureDeskDownloads(id).catch(() => {});
+    await downloads.wait(id, sess.user.id, 20_000);
+    const files = downloads.listFor(id, sess.user.id, { consumeAuto: true });
+    return json(res, 200, { files });
   }
   const chooserApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/file-chooser$/);
   if (chooserApi && req.method === "GET") {
@@ -943,7 +1082,11 @@ server.on("upgrade", (req, socket, head) => {
     seatWss.handleUpgrade(req, socket, head, (ws) => {
       liveSockets.add(sess.user.id, ws);
       seats.beat(seat.id);
-      startSeatScreencast({ ws, seat }).catch((err) => {
+      startSeatScreencast({
+      ws,
+      seat,
+      onActivity: () => noteDeskActor(seat.deskId, seat.userId),
+    }).catch((err) => {
         console.error("seat stream:", err.message);
         try {
           ws.close();

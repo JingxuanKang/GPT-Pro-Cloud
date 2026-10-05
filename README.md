@@ -108,6 +108,12 @@ The clipboard is two-way between your machine and the desk on the exclusive VNC 
 
 Tab seats exist only when multi-user / CDP is on for that account. They cannot use the X11 clip relay — it is one clipboard for the whole desktop, not one per tab. They paste text via CDP `Input.insertText` and images (png/jpeg/webp) via a synthetic `ClipboardEvent` on `document.activeElement`. Click the composer first; if nothing is focused the UI says to click the input. They never write the shared X11 clipboard.
 
+## Chinese input and downloads
+
+Pinyin is composed on your own computer. The exclusive desk turns on KasmVNC's IME field; a tab seat uses the input over the page picture. Committed text is written into the focused desk field with CDP `Input.imeSetComposition` / `Input.insertText`, instead of minting an X11 keysym per character (that table fills up and then new characters stop working).
+
+Saving or downloading an image in the chat lands in the desk container at `/config/gpc-downloads`. The gateway then starts a download in **the browser you are using**. The top-bar **下载** menu lists files from this session, so you can fetch one again if the browser blocked the automatic download.
+
 ## Sharing and memory isolation
 
 There are two ways to share a chat. The basic path needs no automation: click ChatGPT's own Share inside the page and copy — the link reaches your local clipboard through the clipboard relay. With **page assist** on, the top bar gains a Share button that the gateway clicks for you, handing you the link directly.
