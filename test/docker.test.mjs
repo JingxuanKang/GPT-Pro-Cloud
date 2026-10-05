@@ -13,6 +13,8 @@ import {
   templateNetwork,
   ensureDeskContainer,
   removeDeskContainer,
+  negotiateDockerApi,
+  DOCKER_API,
   DESK_LABEL,
 } from "../lib/docker.mjs";
 
@@ -95,12 +97,17 @@ describe("deskContainerSpec", () => {
   });
 });
 
-function startMockDocker({ existing = null, failCreate = false } = {}) {
+function startMockDocker({
+  existing = null,
+  failCreate = false,
+  version = { ApiVersion: "1.48", MinAPIVersion: "1.44", Version: "28.0.0" },
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), "gpc-dock-"));
   const socketPath = join(dir, "docker.sock");
-  const state = { created: [], started: [], connected: [], removed: [] };
+  const state = { created: [], started: [], connected: [], removed: [], urls: [], archives: [] };
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://docker.local");
+    state.urls.push(req.url);
     const path = url.pathname.replace(/^\/v1\.\d+/, "");
     const send = (code, body) => {
       if (body === undefined) {
@@ -111,6 +118,15 @@ function startMockDocker({ existing = null, failCreate = false } = {}) {
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
     };
+    if (req.method === "GET" && path === "/version") {
+      send(200, version);
+      return;
+    }
+    if (req.method === "PUT" && /\/containers\/.+\/archive$/.test(path)) {
+      state.archives.push(req.url);
+      send(200);
+      return;
+    }
     if (req.method === "GET" && path === "/containers/gpt-pro-cloud-a/json") {
       send(200, TEMPLATE);
       return;
@@ -162,6 +178,24 @@ function startMockDocker({ existing = null, failCreate = false } = {}) {
   });
 }
 
+describe("negotiateDockerApi", () => {
+  it("defaults to API 1.44", () => {
+    assert.equal(DOCKER_API, "/v1.44");
+    assert.equal(negotiateDockerApi(null), "/v1.44");
+    assert.equal(negotiateDockerApi({ ApiVersion: "1.48", MinAPIVersion: "1.44" }), "/v1.44");
+    assert.equal(negotiateDockerApi({ ApiVersion: "1.52", MinAPIVersion: "1.24" }), "/v1.44");
+  });
+
+  it("raises to the daemon minimum when that is above 1.44", () => {
+    assert.equal(negotiateDockerApi({ ApiVersion: "1.52", MinAPIVersion: "1.49" }), "/v1.49");
+    assert.equal(negotiateDockerApi({ ApiVersion: "1.52", MinAPIVersion: "v1.50" }), "/v1.50");
+  });
+
+  it("refuses a daemon whose maximum is below 1.44", () => {
+    assert.throws(() => negotiateDockerApi({ ApiVersion: "1.41", MinAPIVersion: "1.12" }), /1\.44/);
+  });
+});
+
 describe("ensureDeskContainer", () => {
   it("creates and starts a sibling of desktop-a", async () => {
     const mock = await startMockDocker();
@@ -176,6 +210,34 @@ describe("ensureDeskContainer", () => {
         "desktop-c",
       ]);
       assert.equal(mock.state.started.length, 1);
+      assert.ok(mock.state.urls.some((u) => u.startsWith("/v1.44/containers/gpt-pro-cloud-a/json")));
+      assert.equal(mock.state.urls.some((u) => u.startsWith("/v1.41/")), false);
+    } finally {
+      mock.server.close();
+    }
+  });
+
+  it("speaks the daemon minimum when Docker requires a client newer than 1.44", async () => {
+    const mock = await startMockDocker({ version: { ApiVersion: "1.52", MinAPIVersion: "1.49" } });
+    try {
+      const client = createDockerClient({ socketPath: mock.socketPath });
+      await ensureDeskContainer("c", client);
+      assert.ok(mock.state.urls.some((u) => u.startsWith("/v1.49/containers/create")));
+      assert.equal(mock.state.urls.some((u) => u.startsWith("/v1.44/")), false);
+      await client.putArchive("gpt-pro-cloud-c", "/config", Buffer.from("tar"));
+      assert.ok(mock.state.archives.some((u) => u.startsWith("/v1.49/containers/gpt-pro-cloud-c/archive")));
+    } finally {
+      mock.server.close();
+    }
+  });
+
+  it("does not call the engine when its API max is below 1.44", async () => {
+    const mock = await startMockDocker({ version: { ApiVersion: "1.41", MinAPIVersion: "1.12" } });
+    try {
+      const client = createDockerClient({ socketPath: mock.socketPath });
+      await assert.rejects(() => ensureDeskContainer("c", client), /1\.44/);
+      assert.equal(mock.state.created.length, 0);
+      assert.equal(mock.state.urls.some((u) => u.includes("/containers/")), false);
     } finally {
       mock.server.close();
     }
