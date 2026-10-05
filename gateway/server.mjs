@@ -10,10 +10,20 @@ import { createDockerClient, deskContainerName, ensureDeskContainer, removeDeskC
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
 import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
-import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
+import { evaluateInDesk, waitForDesk, peekClipboard, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
+import {
+  clipEtag,
+  clipPayloadFromBytes,
+  extractShareUrl,
+  installClipCapture,
+  pickDeskImage,
+  readCapturedClip,
+  seenSeqFromEtag,
+  shareHeaderValue,
+} from "../lib/clip-capture.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
-import { attachSeatTarget, closeTarget, createParkedChatGPTTab, deskBrowserWs, deskBrowsers, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, targetExists } from "../lib/cdp.mjs";
+import { attachSeatTarget, closeTarget, createParkedChatGPTTab, deskBrowserWs, deskBrowsers, evaluateOnSession, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, targetExists } from "../lib/cdp.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
@@ -236,8 +246,10 @@ async function watchExclusiveFileChooser(deskId, user) {
   const targetId = await findChatGptTargetId(deskId);
   if (!targetId) return;
   const attached = await attachSeatTarget(deskId, targetId);
+  const sendOnPage = (method, params, sid) => attached.cdp.send(method, params, sid ?? attached.sessionId);
+  installClipCapture(sendOnPage, attached.sessionId).catch(() => {});
   const armed = await armFileChooser({
-    send: (method, params, sid) => attached.cdp.send(method, params, sid ?? attached.sessionId),
+    send: sendOnPage,
     on: (fn) => attached.cdp.on(fn),
     sessionId: attached.sessionId,
     onOpened: (info) => {
@@ -334,6 +346,94 @@ async function ensureDeskDownloads(deskId) {
   } catch {
     if (downloadArms.get(deskId) === placeholder) downloadArms.delete(deskId);
   }
+}
+
+function writeClip(res, payload, inm = "") {
+  const etag = payload.etag || clipEtag(payload);
+  if (inm && inm === etag) {
+    res.writeHead(204, { etag, "cache-control": "no-store" });
+    res.end();
+    return;
+  }
+  const headers = {
+    etag,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  };
+  const share = shareHeaderValue(payload.text);
+  if (share && payload.kind === "image") headers["x-gpc-share"] = share;
+  if (payload.kind === "image") {
+    headers["content-type"] = payload.mime;
+    headers["content-length"] = String(payload.buf.length);
+    headers["x-gpc-kind"] = "image";
+    res.writeHead(200, headers);
+    res.end(payload.buf);
+    return;
+  }
+  const buf = Buffer.from(payload.text, "utf8");
+  headers["content-type"] = "text/plain; charset=utf-8";
+  headers["content-length"] = String(buf.length);
+  headers["x-gpc-kind"] = "share";
+  res.writeHead(200, headers);
+  res.end(buf);
+}
+
+function endEmptyClip(res) {
+  res.writeHead(204, { "cache-control": "no-store" });
+  res.end();
+}
+
+async function withMemberPage(id, user, fn) {
+  const tab = seats.ofUser(id, user.id);
+  const mode = tab?.mode === "tab" ? "tab" : "vnc";
+  let targetId = mode === "tab" ? tab.targetId : "";
+  if (!targetId && mode === "tab") return null;
+  if (!targetId) {
+    try {
+      await deskBrowserWs(id);
+    } catch {
+      return null;
+    }
+    targetId = await findChatGptTargetId(id);
+  }
+  if (!targetId) return null;
+  const attached = await attachSeatTarget(id, targetId);
+  try {
+    const send = (method, params, sid) => attached.cdp.send(method, params, sid ?? attached.sessionId);
+    const evaluate = (expression) => evaluateOnSession(attached.cdp, attached.sessionId, expression, 12000);
+    const install = () => installClipCapture(send, attached.sessionId);
+    return await fn({ send, evaluate, install, mode, targetId });
+  } finally {
+    await attached.release();
+  }
+}
+
+async function capturedClip(id, user, seenSeq) {
+  try {
+    const out = await withMemberPage(id, user, ({ evaluate, install, mode }) =>
+      readCapturedClip({ evaluate, install, seenSeq }).then((payload) => ({ mode, payload })),
+    );
+    if (!out) return { mode: seats.ofUser(id, user.id)?.mode || "vnc", payload: null };
+    return out;
+  } catch {
+    return { mode: seats.ofUser(id, user.id)?.mode || "vnc", payload: null };
+  }
+}
+
+async function takeMemberImage(id, user) {
+  try {
+    const out = await withMemberPage(id, user, ({ evaluate, install }) => pickDeskImage({ evaluate, install }));
+    if (!out) return { ok: false, status: 502, error: "画面还没准备好" };
+    return out;
+  } catch {
+    return { ok: false, status: 502, error: "没能取出图片" };
+  }
+}
+
+function clipBodyBlank(ct, buf) {
+  if (!buf || !buf.length) return true;
+  if (String(ct || "").startsWith("text/") && !buf.toString("utf8").trim()) return true;
+  return false;
 }
 
 async function readFileUploadBody(req) {
@@ -867,6 +967,15 @@ async function handleApi(req, res, url, sess) {
     if (!opened) return json(res, 200, { open: false });
     return json(res, 200, { open: true, mode: opened.mode || "selectSingle" });
   }
+  const imageApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/image$/);
+  if (imageApi && req.method === "POST") {
+    const id = imageApi[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const out = await takeMemberImage(id, sess.user);
+    if (!out?.ok) return json(res, out?.status || 502, { error: out?.error || "没能取出图片" });
+    writeClip(res, out.payload, "");
+    return;
+  }
   const copy = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/copy$/);
   if (copy && req.method === "POST") {
     const id = copy[1];
@@ -874,47 +983,91 @@ async function handleApi(req, res, url, sess) {
     const tab = seats.ofUser(id, sess.user.id);
     if (tab?.mode === "tab") {
       try {
-        const text = await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ);
-        const buf = Buffer.from(String(text || ""), "utf8");
-        res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-        res.end(buf);
-        return;
+        const text = String((await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ)) || "");
+        if (text.trim()) {
+          const buf = Buffer.from(text, "utf8");
+          res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+          res.end(buf);
+          return;
+        }
       } catch {
-        return json(res, 502, { error: "无法复制" });
+        /* fall through to the page capture */
       }
+      const cap = await capturedClip(id, sess.user, 0);
+      if (cap.payload?.kind) {
+        writeClip(res, cap.payload, "");
+        return;
+      }
+      return json(res, 502, { error: "无法复制" });
     }
     try {
       const r = await fetch(`http://desktop-${id}:18790/grab`, { method: "POST" });
-      if (!r.ok) return json(res, 502, { error: "无法复制" });
-      const buf = Buffer.from(await r.arrayBuffer());
-      const ct = r.headers.get("content-type") || "text/plain; charset=utf-8";
-      res.writeHead(200, { "content-type": ct, "cache-control": "no-store" });
-      res.end(buf);
-      return;
+      if (r.ok) {
+        const buf = Buffer.from(await r.arrayBuffer());
+        const ct = r.headers.get("content-type") || "text/plain; charset=utf-8";
+        if (!clipBodyBlank(ct, buf)) {
+          const headers = { "content-type": ct, "cache-control": "no-store" };
+          const share = shareHeaderValue(r.headers.get("x-gpc-share") || "");
+          if (share) headers["x-gpc-share"] = share;
+          res.writeHead(200, headers);
+          res.end(buf);
+          return;
+        }
+      }
     } catch {
-      return json(res, 502, { error: "无法复制" });
+      /* desk clipboard is optional when the page capture has the image */
     }
+    const cap = await capturedClip(id, sess.user, 0);
+    if (cap.payload?.kind) {
+      writeClip(res, cap.payload, "");
+      return;
+    }
+    return json(res, 502, { error: "无法复制" });
   }
   const peek = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/peek$/);
   if (peek && req.method === "GET") {
     const id = peek[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const inm = String(req.headers["if-none-match"] || "");
+    const cap = await capturedClip(id, sess.user, seenSeqFromEtag(inm));
+    if (cap.payload?.unchanged) {
+      res.writeHead(204, { etag: inm, "cache-control": "no-store" });
+      res.end();
+      return;
+    }
+    if (cap.payload?.kind) {
+      writeClip(res, cap.payload, inm);
+      return;
+    }
     const tab = seats.ofUser(id, sess.user.id);
     if (tab?.mode === "tab") {
       try {
-        const text = await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ);
-        const buf = Buffer.from(String(text || ""), "utf8");
-        res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-        res.end(buf);
+        const text = String((await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ)) || "");
+        const urlOnly = extractShareUrl(text);
+        if (urlOnly) {
+          writeClip(res, { kind: "text", seq: 0, text: urlOnly }, inm);
+          return;
+        }
+        endEmptyClip(res);
         return;
       } catch {
         return json(res, 502, { error: "无法读取剪贴板" });
       }
     }
     try {
-      const { ct, buf } = await peekClipboard(id);
-      res.writeHead(200, { "content-type": ct, "cache-control": "no-store" });
-      res.end(buf);
+      const peeked = await peekClipboard(id, { etag: inm });
+      if (peeked.notModified) {
+        res.writeHead(204, { etag: peeked.etag || inm, "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+      const payload = clipPayloadFromBytes({ mime: peeked.ct, buf: peeked.buf, share: peeked.share });
+      if (!payload) {
+        endEmptyClip(res);
+        return;
+      }
+      if (peeked.etag && /xclip-/i.test(peeked.etag)) payload.etag = peeked.etag;
+      writeClip(res, payload, inm);
       return;
     } catch {
       return json(res, 502, { error: "无法读取剪贴板" });
@@ -931,14 +1084,18 @@ async function handleApi(req, res, url, sess) {
       if (!clicked?.ok) return json(res, 400, { error: clicked?.error || "分享失败" });
       await sleep(400);
       let text = "";
-      if (tab?.mode === "tab" && tab.targetId) {
+      const cap = await capturedClip(id, sess.user, 0);
+      if (cap.payload?.kind === "text") text = cap.payload.text;
+      else if (cap.payload?.text) text = cap.payload.text;
+      if (!extractShareUrl(text) && tab?.mode === "tab" && tab.targetId) {
         text = String((await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ)) || "").trim();
-      } else {
-        const { buf } = await peekClipboard(id);
-        text = buf.toString("utf8").trim();
+      } else if (!extractShareUrl(text)) {
+        const peeked = await peekClipboard(id);
+        text = extractShareUrl(peeked.share) || peeked.buf.toString("utf8").trim();
       }
-      if (!isShareUrl(text)) return json(res, 200, { ok: true, url: "" });
-      return json(res, 200, { ok: true, url: text.split(/\s+/)[0] });
+      const shareUrl = extractShareUrl(text);
+      if (!shareUrl) return json(res, 200, { ok: true, url: "" });
+      return json(res, 200, { ok: true, url: shareUrl });
     } catch (e) {
       return json(res, 502, { error: e.message || "分享失败" });
     }

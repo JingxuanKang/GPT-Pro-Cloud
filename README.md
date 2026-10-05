@@ -108,6 +108,8 @@ The clipboard is two-way between your machine and the desk. Text and screenshots
 
 To attach a file, click **上传** in the desk bar or ChatGPT's paperclip inside the desk and pick a file on your own machine. You can also drop files onto the desk. The gateway hands it to ChatGPT's file chooser through the desk's debug port. That port listens on the container loopback only, and the forwarder accepts only the gateway. The limit is 12 MB per upload.
 
+Generated images are different: ChatGPT's Copy button writes an image inside the remote Chromium, and noVNC only carries text, so the picture often never reaches your machine. The desk page keeps that image (and image share links such as `chatgpt.com/share/…` and `chatgpt.com/s/…`). A bar then offers **复制到本机** and **下载**. If the browser blocks image clipboard writes, download still saves the file. **取图片** pulls the latest generated image the same way.
+
 ## Chinese input and downloads
 
 Pinyin is composed on your own computer. A desk opens on the VNC picture: **中文** in the top bar takes that composition, and typing on the picture does too. A tab seat uses the input over the page picture. Committed text is written into the focused desk field with CDP `Input.imeSetComposition` / `Input.insertText`, instead of minting an X11 keysym per character (that table fills up and then new characters stop working).
