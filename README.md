@@ -6,7 +6,7 @@
 
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED?style=flat-square&logo=docker&logoColor=white)](docker-compose.yml)
 [![Node.js](https://img.shields.io/badge/node.js-22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](gateway/)
-[![Chromium](https://img.shields.io/badge/chromium-tab_seats-4587F3?style=flat-square&logo=googlechrome&logoColor=white)](docker/)
+[![Chromium](https://img.shields.io/badge/chromium-one_profile_per_account-4587F3?style=flat-square&logo=googlechrome&logoColor=white)](docker/)
 [![KasmVNC](https://img.shields.io/badge/kasmvnc-web_desktop-5257CF?style=flat-square)](https://kasmweb.com/kasmvnc)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-yes-178F5F?style=flat-square)](Deploy.md)
 [![License](https://img.shields.io/badge/license-MIT-1a1a18?style=flat-square)](LICENSE)
