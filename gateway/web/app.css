@@ -246,6 +246,7 @@ button { cursor: pointer; }
   font-weight: 600;
   border-bottom-color: var(--ink);
 }
+.top > * { white-space: nowrap; flex-shrink: 0; }
 .top-sep { width: 1px; height: 16px; background: var(--line-2); }
 .top-user {
   display: flex;
@@ -839,8 +840,10 @@ label.switch-row { cursor: pointer; }
 
 @media (max-width: 560px) {
   :root { --pad: 20px; }
-  .top { padding-top: 18px; gap: 16px; }
-  .top-user span { display: none; }
+  .top { padding-top: 18px; gap: 14px; }
+  .top-user > span:not(.av) { display: none; }
+  .proxy-row { flex-wrap: wrap; gap: 8px 10px; }
+  .proxy-id { flex-basis: 100%; }
   .page-head { margin: 36px 0 28px; }
   .page-head h1 { font-size: 30px; }
   .cardgrid { grid-template-columns: 1fr; }
@@ -849,4 +852,8 @@ label.switch-row { cursor: pointer; }
   .who { display: none; }
   .clip-sep, .clip-keys { display: none; }
   .clip-chip { padding-right: 12px; }
+}
+
+@media (max-width: 440px) {
+  .brand > span { display: none; }
 }

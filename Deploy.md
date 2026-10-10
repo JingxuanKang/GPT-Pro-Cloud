@@ -5,7 +5,7 @@
 | 容器 | 说明 |
 |---|---|
 | `gpt-pro-cloud-gateway` | 唯一入口 `:36090`，登录、账号选择、团队管理、桌面反代 |
-| `gpt-pro-cloud-a` / `b` | 内置 ChatGPT 席位，各一只独立 Chromium。调试口默认关闭；面板「多人分屏」才会开 CDP。`9222/9223` 不映射宿主机，cdp-fwd 只接受 gateway。开启后同一账号上每个人都走独立分屏标签（含第一人，`TAB_SEATS_MAX`，默认 3），不是第二只浏览器、也不是第二台容器 |
+| `gpt-pro-cloud-a` / `b` | 内置 ChatGPT 席位，各一只独立 Chromium，一次一人独占 VNC。调试口常开，只供文件上传：`9222` 只绑容器回环，`9223` 不映射宿主机，cdp-fwd 只接受 gateway。多人分屏已关闭 |
 | `gpt-pro-cloud-<id>` | 面板里添加的额外席位，由 gateway 克隆 `desktop-a`；不写进 compose |
 
 持久化数据都在仓库目录下：`./data/<id>`（Chromium profile 与 ChatGPT 登录态）、`./data-panel/`（成员 `users.json`、会话 `sessions.json`、设置，以及 `extraDeskIds`）。两者都被 gitignore。
@@ -57,7 +57,7 @@ cloudflared tunnel --url http://127.0.0.1:36090
 
 要固定主机名，把 named tunnel 指到同一个本地端口（需要 Cloudflare 上有域名）。
 
-把打印出的 `https://` 地址发给队友。部署者用已建好的管理员登录；成员用「团队」页创建的网关用户名/密码，不是 ChatGPT 密码。限流与审计会读 `CF-Connecting-IP`。
+把打印出的 `https://` 地址发给队友。部署者用已建好的管理员登录；成员用「管理」页创建的网关用户名/密码，不是 ChatGPT 密码。限流与审计会读 `CF-Connecting-IP`。
 
 ## 健康检查
 
