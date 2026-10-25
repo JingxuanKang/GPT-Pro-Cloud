@@ -889,11 +889,12 @@ label.switch-row { cursor: pointer; }
   top: 12px;
   width: 8em;
   height: 1.6em;
-  opacity: 0.02;
+  opacity: 1;
   z-index: 3;
   font-size: 16px;
   line-height: 1.4;
   color: transparent;
+  caret-color: transparent;
   background: transparent;
   border: 0;
   padding: 0;
@@ -902,6 +903,24 @@ label.switch-row { cursor: pointer; }
   overflow: visible;
   pointer-events: none;
 }
+.desk-ime {
+  width: 8em;
+  height: 28px;
+  margin: 0;
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  caret-color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  resize: none;
+  overflow: hidden;
+}
+.desk-ime[hidden] { display: none !important; }
+#desk-ime-btn[aria-pressed="true"] { background: var(--hover); color: var(--ink); }
 .frame-wait {
   position: absolute;
   inset: 0;

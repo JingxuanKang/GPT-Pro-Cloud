@@ -565,6 +565,7 @@ function renderDesk() {
         <button type="button" class="chrome-btn" id="download-files" aria-haspopup="menu">${ICO.download}<span>下载</span><i class="dl-count" id="dl-count" hidden></i></button>
         <div class="download-menu" id="download-menu" hidden></div>
         <button type="button" class="clip-chip" id="clip-chip"></button>
+        ${state.seatId && !tab ? `<button type="button" class="chrome-btn" id="desk-ime-btn" aria-pressed="false" title="用本机拼音输入，写进桌面里已经点中的输入框"><span>中文</span></button><textarea id="desk-ime" class="desk-ime" autocomplete="off" autocapitalize="off" spellcheck="false" lang="zh-CN" aria-label="中文输入" hidden></textarea>` : ""}
       </div>
     </div>
     <div class="frame">
@@ -717,7 +718,7 @@ function pinImeField(el, x, y) {
   el.style.setProperty("top", `${top}px`, "important");
 }
 
-const VNC_IME_CSS = `#noVNC_keyboardinput{position:fixed!important;left:12px;top:12px;width:8em!important;min-width:8em!important;height:1.6em!important;min-height:1.6em!important;opacity:.02!important;overflow:visible!important;z-index:99999!important;font-size:16px!important;line-height:1.4!important;color:transparent!important;background:transparent!important;border:0!important;padding:0!important;margin:0!important;resize:none!important;pointer-events:none!important;}`;
+const VNC_IME_CSS = `#noVNC_keyboardinput{position:fixed!important;left:12px;top:12px;width:8em!important;min-width:8em!important;height:1.6em!important;min-height:1.6em!important;opacity:1!important;overflow:visible!important;z-index:99999!important;font-size:16px!important;line-height:1.4!important;color:transparent!important;caret-color:transparent!important;background:transparent!important;border:0!important;padding:0!important;margin:0!important;resize:none!important;-webkit-text-fill-color:transparent!important;pointer-events:none!important;}`;
 
 function enableKasmIme(win) {
   const roots = [win?.UI, win?.ui, win];
@@ -970,6 +971,7 @@ function bindDesk() {
     bindSeatCast();
     bindTabClipboard();
   } else if (iframe) {
+    bindDeskIme();
     iframe.addEventListener(
       "load",
       () => {
@@ -1484,6 +1486,125 @@ function bindClipboard(iframe) {
   setTimeout(() => clearInterval(iv), 20000);
 }
 
+function postDeskIme(phase, text, seq) {
+  const id = state.deskId;
+  if (!id || state.view !== "desk" || state.deskMode === "tab") return;
+  fetch(`/api/desks/${id}/ime`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phase, text, seq }),
+  }).catch(() => {});
+}
+
+const VNC_LATIN_KEYSYM = {
+  Enter: 0xff0d,
+  Backspace: 0xff08,
+  Tab: 0xff09,
+  Escape: 0xff1b,
+  Delete: 0xffff,
+  ArrowLeft: 0xff51,
+  ArrowUp: 0xff52,
+  ArrowRight: 0xff53,
+  ArrowDown: 0xff54,
+  Home: 0xff50,
+  End: 0xff57,
+  PageUp: 0xff55,
+  PageDown: 0xff56,
+};
+
+function vncKeysym(key) {
+  if (!key) return 0;
+  if (VNC_LATIN_KEYSYM[key]) return VNC_LATIN_KEYSYM[key];
+  if (key.length !== 1) return 0;
+  const code = key.codePointAt(0);
+  if (code >= 0x20 && code <= 0xff) return code;
+  return 0;
+}
+
+function forwardVncKey(win, e, down) {
+  if (!e || e.ctrlKey || e.metaKey || e.altKey) return false;
+  const rfb = win?.UI?.rfb;
+  if (!rfb || typeof rfb.sendKey !== "function") return false;
+  const keysym = vncKeysym(e.key);
+  if (!keysym) return false;
+  try {
+    rfb.sendKey(keysym, e.code || null, down);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function imeComposingEvent(e) {
+  return !!(e && (e.isComposing || e.keyCode === 229 || e.key === "Process" || e.key === "Unidentified"));
+}
+
+function bindDeskIme() {
+  const btn = $("#desk-ime-btn");
+  const ime = $("#desk-ime");
+  if (!ime || ime.dataset.gpcIme === "1") return;
+  ime.dataset.gpcIme = "1";
+  const pump = createImePump(postDeskIme);
+  let quietUntil = 0;
+  let committedAt = 0;
+  const show = (on) => {
+    if (btn) btn.setAttribute("aria-pressed", on ? "true" : "false");
+    ime.hidden = !on;
+    if (!on) return;
+    try {
+      ime.focus({ preventScroll: true });
+    } catch {
+      ime.focus();
+    }
+  };
+  if (btn) {
+    btn.onclick = () => {
+      if (!ime.hidden) {
+        ime.value = "";
+        pump("cancel", "");
+        show(false);
+        return;
+      }
+      show(true);
+    };
+  }
+  ime.addEventListener("compositionstart", () => {
+    quietUntil = 0;
+  });
+  ime.addEventListener("compositionupdate", (e) => {
+    pump("update", e.data || "");
+  });
+  ime.addEventListener("compositionend", (e) => {
+    const text = e.data || ime.value || "";
+    ime.value = "";
+    quietUntil = Date.now() + 80;
+    committedAt = Date.now();
+    pump(text ? "commit" : "cancel", text);
+  });
+  ime.addEventListener("input", (e) => {
+    if (e.isComposing || e.inputType === "insertCompositionText") return;
+    if (Date.now() - committedAt < 50) {
+      ime.value = "";
+      return;
+    }
+    const text = ime.value;
+    if (!text) return;
+    ime.value = "";
+    pump("commit", text);
+  });
+  ime.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !imeComposingEvent(e)) {
+      e.preventDefault();
+      ime.value = "";
+      pump("cancel", "");
+      show(false);
+    } else if (imeKeySuppressed(e, quietUntil)) {
+      e.stopPropagation();
+    }
+  });
+}
+
 function bindVncIme(win, doc) {
   const kb = doc.getElementById("noVNC_keyboardinput");
   if (!kb || kb.dataset.gpcIme === "1") return;
@@ -1491,16 +1612,7 @@ function bindVncIme(win, doc) {
   kb.setAttribute("lang", "zh-CN");
   kb.setAttribute("autocomplete", "off");
   pinImeField(kb, 12, 12);
-  const pump = createImePump((phase, text, seq) => {
-    const id = state.deskId;
-    if (!id || state.view !== "desk" || state.deskMode === "tab") return;
-    fetch(`/api/desks/${id}/ime`, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ phase, text, seq }),
-    }).catch(() => {});
-  });
+  const pump = createImePump(postDeskIme);
   const swallow = (e) => e.stopImmediatePropagation();
   let swallowInput = false;
   kb.addEventListener(
@@ -1534,36 +1646,66 @@ function bindVncIme(win, doc) {
     "input",
     (e) => {
       if (swallowInput || e.isComposing || e.inputType === "insertCompositionText") {
-        swallowInput = e.isComposing || e.inputType === "insertCompositionText";
+        swallowInput = !!(e.isComposing || e.inputType === "insertCompositionText");
+        kb.value = "";
         swallow(e);
+        return;
       }
+      const text = kb.value;
+      kb.value = "";
+      if (text && /[^\u0000-\u00ff]/.test(text)) pump("commit", text);
     },
     true,
   );
   kb.addEventListener(
     "keydown",
     (e) => {
-      if (e.isComposing || e.keyCode === 229 || e.key === "Process") swallow(e);
+      if (imeComposingEvent(e)) swallow(e);
     },
     true,
   );
   kb.addEventListener(
     "keyup",
     (e) => {
-      if (e.isComposing || e.keyCode === 229 || e.key === "Process") swallow(e);
+      if (imeComposingEvent(e)) swallow(e);
     },
     true,
   );
+  const held = new Set();
+  const scheduleVncKey = (e, down) => {
+    if (imeComposingEvent(e)) return;
+    const token = e.code || e.key || "";
+    const snap = { key: e.key, code: e.code, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey };
+    setTimeout(() => {
+      if (e.defaultPrevented) return;
+      if (!down) {
+        if (!held.has(token)) return;
+        held.delete(token);
+      }
+      if (!forwardVncKey(win, snap, down)) return;
+      if (down) held.add(token);
+    }, 0);
+  };
+  kb.addEventListener("keydown", (e) => scheduleVncKey(e, true));
+  kb.addEventListener("keyup", (e) => scheduleVncKey(e, false));
+  const focusKb = () => {
+    if (state.view !== "desk" || state.deskMode === "tab") return;
+    const parentIme = document.getElementById("desk-ime");
+    if (parentIme && !parentIme.hidden && document.activeElement === parentIme) return;
+    try {
+      kb.focus({ preventScroll: true });
+    } catch {
+      kb.focus();
+    }
+  };
   win.addEventListener(
     "pointerdown",
     (e) => {
       pinImeField(kb, e.clientX, e.clientY);
       enableKasmIme(win);
-      try {
-        kb.focus({ preventScroll: true });
-      } catch {
-        kb.focus();
-      }
+      focusKb();
+      setTimeout(focusKb, 0);
+      setTimeout(focusKb, 48);
     },
     true,
   );

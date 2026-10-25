@@ -278,6 +278,7 @@ async function imeSender(deskId, user) {
   if (watch?.deskId === deskId && typeof watch.send === "function") return watch.send;
   const cached = imePipes.get(user.id);
   if (cached?.deskId === deskId && typeof cached.send === "function") return cached.send;
+  await ensureExclusiveFilePipe(deskId);
   const seat = seats.ofUser(deskId, user.id);
   const targetId = seat?.targetId || (await findChatGptTargetId(deskId));
   if (!targetId) {

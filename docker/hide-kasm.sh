@@ -22,7 +22,7 @@ a[href*="kasmweb.com"] {
   min-width: 8em !important;
   height: 1.6em !important;
   min-height: 1.6em !important;
-  opacity: 0.02 !important;
+  opacity: 1 !important;
   overflow: visible !important;
   z-index: 99999 !important;
   font-size: 16px !important;
@@ -31,6 +31,9 @@ a[href*="kasmweb.com"] {
   margin: 0 !important;
   resize: none !important;
   border: 0 !important;
+  color: transparent !important;
+  caret-color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
   background: transparent !important;
   pointer-events: none !important;
 }'

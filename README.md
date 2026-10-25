@@ -110,7 +110,7 @@ To attach a file, click **上传** in the desk bar or ChatGPT's paperclip inside
 
 ## Chinese input and downloads
 
-Pinyin is composed on your own computer. The exclusive desk turns on KasmVNC's IME field; a tab seat uses the input over the page picture. Committed text is written into the focused desk field with CDP `Input.imeSetComposition` / `Input.insertText`, instead of minting an X11 keysym per character (that table fills up and then new characters stop working).
+Pinyin is composed on your own computer. A desk opens on the VNC picture: **中文** in the top bar takes that composition, and typing on the picture does too. A tab seat uses the input over the page picture. Committed text is written into the focused desk field with CDP `Input.imeSetComposition` / `Input.insertText`, instead of minting an X11 keysym per character (that table fills up and then new characters stop working).
 
 Saving or downloading an image in the chat lands in the desk container at `/config/gpc-downloads`. The gateway then starts a download in **the browser you are using**. The top-bar **下载** menu lists files from this session, so you can fetch one again if the browser blocked the automatic download.
 
