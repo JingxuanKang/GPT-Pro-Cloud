@@ -108,6 +108,23 @@ The clipboard is two-way between your machine and the desk. Text and screenshots
 
 To attach a file, click **上传** in the desk bar or ChatGPT's paperclip inside the desk and pick a file on your own machine. You can also drop files onto the desk. The gateway hands it to ChatGPT's file chooser through the desk's debug port. That port listens on the container loopback only, and the forwarder accepts only the gateway. The limit is 12 MB per upload.
 
+Generated images are different: ChatGPT's Copy button writes an image inside the remote Chromium, and noVNC only carries text, so the picture often never reaches your machine. The desk page keeps that image (and image share links such as `chatgpt.com/share/…` and `chatgpt.com/s/…`). A bar then offers **复制到本机** and **下载**. If the browser blocks image clipboard writes, download still saves the file. **取图片** pulls the latest generated image the same way.
+
+## Downloading a generated image
+
+After ChatGPT generates an image on the desk, save it in **the browser you are using**.
+
+1. Click **下载图片** in the gateway top bar. The gateway reads the latest large generated image from the open chat. The address may be a page `blob:`, a `data:image`, or an `oaiusercontent` / ChatGPT file CDN URL. Once the bytes are a complete png, jpeg, webp, or gif, your browser starts the save. That path does not treat a server copy as the file you receive.
+2. ChatGPT's own download or save on the image: if the click reaches Chromium's download manager, the file lands in `/config/gpc-downloads` inside the desk container and the gateway then starts a download in your browser. If ChatGPT never calls the download manager (the image stays a blob or CDN URL in the page), the same click reads that image in the page and hands it to your browser. If nothing saves, click **下载图片** again.
+
+The top bar takes the latest generated image in the current chat. For an earlier one, open that image or use ChatGPT's download on it.
+
+## Chinese input and downloads
+
+Pinyin is composed on your own computer. A desk opens on the VNC picture: **中文** in the top bar takes that composition, and typing on the picture does too. A tab seat uses the input over the page picture. Committed text is written into the focused desk field with CDP `Input.imeSetComposition` / `Input.insertText`, instead of minting an X11 keysym per character (that table fills up and then new characters stop working).
+
+Saving or downloading an image in the chat lands in the desk container at `/config/gpc-downloads`. The gateway then starts a download in **the browser you are using**. The top-bar **下载** menu lists files from this session, so you can fetch one again if the browser blocked the automatic download.
+
 ## Sharing
 
 Click ChatGPT's own Share inside the page and copy the link. The link reaches your local clipboard through the clipboard relay.

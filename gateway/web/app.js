@@ -95,6 +95,7 @@ const ICO = {
   userx: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM3.5 20c.7-3.6 3.4-5.5 6.5-5.5 1.1 0 2.1.2 3 .7M16 15l5 5M21 15l-5 5"/></svg>`,
   clip: `<svg class="ico-clip" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M9 4h6v3H9zM15 5h3a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h3"/></svg>`,
   upload: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 16V5M8 8.5 12 4.5 16 8.5M6 19h12"/></svg>`,
+  download: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 4v11M8 11.5 12 15.5 16 11.5M6 19h12"/></svg>`,
 };
 
 function greet() {
@@ -429,7 +430,7 @@ function renderSettings() {
     <section class="panel">
       <div class="panel-head">
         <b>复制粘贴</b>
-        <em>在桌面画面里直接 ${MOD}+C / ${MOD}+V，双向生效。独占 VNC 走整桌剪贴板（文字和截图）。</em>
+        <em>在桌面画面里直接 ${MOD}+C / ${MOD}+V，双向生效。独占 VNC 走整桌剪贴板（文字和截图）。生成的图片和图片分享链接若没进本机剪贴板，画面下方会给出「复制到本机」和「下载」。</em>
       </div>
     </section>
     <section class="panel">
@@ -534,9 +535,200 @@ async function copyLastToLocal() {
   if (!lastClip) return false;
   if (lastClip.kind === "image") {
     const blob = new Blob([lastClip.body], { type: lastClip.mime || "image/png" });
-    return writeToLocal("", blob);
+    const png = /png/i.test(blob.type) ? blob : await blobAsPng(blob);
+    return writeToLocal("", png || blob);
   }
   return writeToLocal(lastClip.text || "", null);
+}
+
+function clientShareUrl(text) {
+  const m = String(text || "").match(
+    /https:\/\/(?:(?:chatgpt\.com|chat\.openai\.com)\/(?:share|s)\/[A-Za-z0-9_-]+(?:[/?#][^\s"'<>]*)?|(?:files\.)?oaiusercontent\.com\/[^\s"'<>]+)/i,
+  );
+  return m ? m[0].replace(/[),.;]+$/g, "") : "";
+}
+
+function bytesKey(buf) {
+  const u = buf instanceof Uint8Array ? buf : new Uint8Array(buf || 0);
+  let s = String(u.length);
+  const n = Math.min(u.length, 64);
+  for (let i = 0; i < n; i++) s += "." + u[i];
+  return s;
+}
+
+async function blobAsPng(blob) {
+  if (!blob) return null;
+  if (/png/i.test(blob.type || "")) return blob;
+  try {
+    const bmp = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas");
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    canvas.getContext("2d").drawImage(bmp, 0, 0);
+    const png = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    return png || blob;
+  } catch {
+    return blob;
+  }
+}
+
+function downloadBytes(buf, mime, name) {
+  const blob = new Blob([buf], { type: mime || "application/octet-stream" });
+  const a = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function armPngWrite() {
+  if (!window.isSecureContext || !navigator.clipboard?.write || !window.ClipboardItem) return null;
+  let resolve;
+  let reject;
+  const blobPromise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  blobPromise.catch(() => {});
+  let writePromise;
+  try {
+    writePromise = navigator.clipboard
+      .write([new ClipboardItem({ "image/png": blobPromise })])
+      .then(() => true)
+      .catch(() => false);
+  } catch {
+    try { reject(new Error("clipboard")); } catch { /* ignore */ }
+    return null;
+  }
+  return {
+    fulfill(blob) {
+      try { resolve(blob); } catch { /* ignore */ }
+      return writePromise;
+    },
+    cancel() {
+      try { reject(new Error("cancel")); } catch { /* ignore */ }
+      return writePromise;
+    },
+  };
+}
+
+let clipOffer = null;
+let lastClipEtag = "";
+let clipWatchDesk = "";
+
+function paintClipOffer() {
+  const root = $("#clip-offer");
+  if (!root) return;
+  if (!clipOffer) {
+    root.hidden = true;
+    return;
+  }
+  const img = $("#clip-offer-img");
+  const title = $("#clip-offer-title");
+  const hint = $("#clip-offer-hint");
+  const url = $("#clip-offer-url");
+  const save = $("#clip-offer-save");
+  const copyBtn = $("#clip-offer-copy");
+  root.hidden = false;
+  const share = clipOffer.share || "";
+  if (clipOffer.kind === "image") {
+    if (img) {
+      img.hidden = false;
+      img.src = lastThumb || "";
+      img.alt = "生成的图片";
+    }
+    if (title) title.textContent = "生成的图片";
+    if (hint) hint.textContent = share
+      ? "图片和分享链接都已取出。复制被拦住时点下载，链接也可以直接选中。"
+      : "图片已取出。若浏览器拦住剪贴板，点下载保存到本机。";
+    if (save) save.hidden = false;
+    if (copyBtn) copyBtn.textContent = "复制到本机";
+  } else {
+    if (img) {
+      img.hidden = true;
+      img.removeAttribute("src");
+    }
+    if (title) title.textContent = "图片分享链接";
+    if (hint) hint.textContent = "链接已取出。点复制，或直接选中下面的地址。";
+    if (save) save.hidden = true;
+    if (copyBtn) copyBtn.textContent = "复制链接";
+  }
+  if (url) {
+    url.hidden = !share;
+    url.value = share;
+  }
+}
+
+function presentImage(buf, mime, share, { toastIt = true } = {}) {
+  const type = String(mime || "image/png").split(";")[0];
+  const key = bytesKey(buf) + "|" + (share || "");
+  const same = clipOffer?.key === key;
+  const blob = new Blob([buf], { type });
+  if (lastThumb) URL.revokeObjectURL(lastThumb);
+  lastThumb = URL.createObjectURL(blob);
+  lastClip = { kind: "image", body: buf, mime: type, text: share || "", thumb: lastThumb };
+  clipOffer = { kind: "image", buf, mime: type, share: share || "", key };
+  setChip("image");
+  paintClipOffer();
+  if (toastIt && !same) toast(share ? "图片和分享链接已取出" : "图片已取出，可复制或下载", "image");
+}
+
+function presentShare(url, { toastIt = true } = {}) {
+  const share = clientShareUrl(url);
+  if (!share) return false;
+  const key = "url:" + share;
+  const same = clipOffer?.key === key;
+  lastClip = { kind: "text", body: share, mime: "text/plain; charset=utf-8", text: share, thumb: "" };
+  clipOffer = { kind: "share", share, key };
+  lastPeeked = share;
+  setChip("text", share);
+  paintClipOffer();
+  if (toastIt && !same) toast("分享链接已取出，可复制或选中");
+  return true;
+}
+
+function onOfferCopy() {
+  if (!clipOffer) return;
+  if (clipOffer.kind !== "image") {
+    writeToLocal(clipOffer.share || "", null).then((ok) => {
+      toast(ok ? "链接已复制到本机" : "链接在输入框里，选中即可复制");
+      const field = $("#clip-offer-url");
+      field?.focus();
+      field?.select();
+    });
+    return;
+  }
+  const blob = new Blob([clipOffer.buf], { type: clipOffer.mime || "image/png" });
+  const finish = (out, ok) => {
+    if (ok) {
+      toast("图片已复制到本机", "image");
+      return;
+    }
+    const file = out || blob;
+    file.arrayBuffer().then((buf) => {
+      downloadBytes(buf, file.type || "image/png", "chatgpt-image.png");
+      toast("浏览器拦住了剪贴板，已开始下载图片", "image");
+    });
+  };
+  if (/png/i.test(blob.type || "")) {
+    writeToLocal("", blob).then((ok) => finish(blob, ok));
+    return;
+  }
+  const early = armPngWrite();
+  blobAsPng(blob).then((png) => {
+    const out = png || blob;
+    const pending = early ? early.fulfill(out) : writeToLocal("", out);
+    return pending.then((ok) => finish(out, ok));
+  });
+}
+
+function onOfferSave() {
+  if (clipOffer?.kind !== "image" || !clipOffer.buf) return;
+  downloadBytes(clipOffer.buf, clipOffer.mime || "image/png", "chatgpt-image.png");
+  toast("已开始下载图片", "image");
 }
 
 function renderDesk() {
@@ -548,7 +740,7 @@ function renderDesk() {
   const surface = !state.seatId
     ? ""
     : tab
-      ? `<canvas id="seat-cast" class="seat-cast" tabindex="0" aria-label="ChatGPT"></canvas>`
+      ? `<canvas id="seat-cast" class="seat-cast" tabindex="0" aria-label="ChatGPT"></canvas><textarea id="seat-ime" class="seat-ime" autocomplete="off" autocapitalize="off" spellcheck="false" lang="zh-CN" aria-label="中文输入"></textarea>`
       : `<iframe src="${src}" allow="clipboard-read; clipboard-write; autoplay; microphone"></iframe>`;
   return `<div class="stage">
     <div class="chrome">
@@ -560,8 +752,13 @@ function renderDesk() {
       </div>
       <div class="chrome-end">
         ${deskCdpOn(state.deskId) ? `<button type="button" class="chrome-btn" id="share-chat">${ICO.share}<span>分享</span></button>` : ""}
+        <button type="button" class="chrome-btn" id="take-image">${ICO.image}<span>取图片</span></button>
         <button type="button" class="chrome-btn" id="upload-files">${ICO.upload}<span>上传</span></button>
+        <button type="button" class="chrome-btn" id="download-image" title="把当前对话里最新一张生成图保存到这台电脑">${ICO.download}<span>下载图片</span></button>
+        <button type="button" class="chrome-btn" id="download-files" aria-haspopup="menu">${ICO.download}<span>下载</span><i class="dl-count" id="dl-count" hidden></i></button>
+        <div class="download-menu" id="download-menu" hidden></div>
         <button type="button" class="clip-chip" id="clip-chip"></button>
+        ${state.seatId && !tab ? `<button type="button" class="chrome-btn" id="desk-ime-btn" aria-pressed="false" title="用本机拼音输入，写进桌面里已经点中的输入框"><span>中文</span></button><textarea id="desk-ime" class="desk-ime" autocomplete="off" autocapitalize="off" spellcheck="false" lang="zh-CN" aria-label="中文输入" hidden></textarea>` : ""}
       </div>
     </div>
     <div class="frame">
@@ -569,6 +766,19 @@ function renderDesk() {
       <input type="file" id="os-files" multiple hidden accept=".pdf,.doc,.docx,.txt,image/*" />
       <div class="frame-wait" id="frame-wait">${MARK}</div>
       ${surface}
+      <div class="clip-offer" id="clip-offer" hidden>
+        <img id="clip-offer-img" alt="">
+        <div class="clip-offer-copy">
+          <b id="clip-offer-title"></b>
+          <p id="clip-offer-hint"></p>
+          <input id="clip-offer-url" class="clip-offer-url" readonly hidden spellcheck="false" aria-label="分享链接">
+        </div>
+        <div class="clip-offer-acts">
+          <button type="button" class="btn" id="clip-offer-copy">复制到本机</button>
+          <button type="button" class="btn ghost" id="clip-offer-save">下载图片</button>
+          <button type="button" class="btn ghost" id="clip-offer-x">关闭</button>
+        </div>
+      </div>
     </div>
   </div>`;
 }
@@ -641,6 +851,8 @@ function dropPresence() {
   stopPeek();
   stopSeatCast();
   stopChooserPoll();
+  stopDownloadPoll();
+  stopImageDownloadPoll();
   if (!state.me) return;
   const uid = state.me.username;
   for (const id of Object.keys(state.presence)) {
@@ -651,27 +863,81 @@ function dropPresence() {
   state.seatId = null;
 }
 
-function isShareLink(text) {
-  return /^https:\/\/chatgpt\.com\/share\/[A-Za-z0-9-]+/i.test(String(text || "").trim());
-}
-
 async function adoptDeskText(text, quiet) {
-  const t = String(text || "").trim();
-  if (!t) return false;
-  const url = isShareLink(t) ? t.split(/\s+/)[0] : t;
-  if (lastPeeked === url || lastClip?.text === url) return false;
-  lastPeeked = url;
-  lastClip = { kind: "text", body: url, mime: "text/plain; charset=utf-8", text: url, thumb: "" };
-  setChip("text", url);
-  const ok = await writeToLocal(url, null);
-  if (!quiet) {
-    toast(isShareLink(url) ? ok ? "分享链接已复制" : "链接已记下，点格子拷到本机" : ok ? "已拷到本机" : "已记下，点格子拷到本机");
-  }
-  return true;
+  const url = clientShareUrl(text);
+  if (!url) return false;
+  const known = clipOffer?.share === url;
+  presentShare(url, { toastIt: !quiet && !known });
+  return writeToLocal(url, null);
 }
 
 let seatWs = null;
 let seatResize = null;
+
+function createImePump(send) {
+  let timer = 0;
+  let queued = null;
+  let seq = 0;
+  const flush = (phase, text) => {
+    seq += 1;
+    send(phase, String(text || ""), seq);
+  };
+  return (phase, text) => {
+    if (phase === "update") {
+      queued = text ?? "";
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const t = queued;
+        queued = null;
+        flush("update", t);
+      }, 40);
+      return;
+    }
+    clearTimeout(timer);
+    queued = null;
+    flush(phase, text);
+  };
+}
+
+function imeKeySuppressed(e, quietUntil) {
+  if (!e) return false;
+  if (e.isComposing || e.keyCode === 229 || e.key === "Process" || e.key === "Unidentified") return true;
+  if (Date.now() < quietUntil && (e.key === "Enter" || e.key === " " || e.code === "Space")) return true;
+  return false;
+}
+
+function pinImeField(el, x, y) {
+  if (!el) return;
+  const left = Math.max(0, Math.round(Number(x) || 12));
+  const top = Math.max(0, Math.round(Number(y) || 12));
+  el.style.setProperty("left", `${left}px`, "important");
+  el.style.setProperty("top", `${top}px`, "important");
+}
+
+const VNC_IME_CSS = `#noVNC_keyboardinput{position:fixed!important;left:12px;top:12px;width:8em!important;min-width:8em!important;height:1.6em!important;min-height:1.6em!important;opacity:1!important;overflow:visible!important;z-index:99999!important;font-size:16px!important;line-height:1.4!important;color:transparent!important;caret-color:transparent!important;background:transparent!important;border:0!important;padding:0!important;margin:0!important;resize:none!important;-webkit-text-fill-color:transparent!important;pointer-events:none!important;}`;
+
+function enableKasmIme(win) {
+  const roots = [win?.UI, win?.ui, win];
+  const seen = new Set();
+  const stack = roots.filter(Boolean);
+  while (stack.length && seen.size < 80) {
+    const obj = stack.pop();
+    if (!obj || (typeof obj !== "object" && typeof obj !== "function") || seen.has(obj)) continue;
+    seen.add(obj);
+    try {
+      if ("enableIME" in obj && obj.enableIME !== true) obj.enableIME = true;
+    } catch {
+      /* ignore */
+    }
+    for (const key of ["rfb", "_rfb", "keyboard", "_keyboard"]) {
+      try {
+        if (obj[key]) stack.push(obj[key]);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
 
 function stopSeatCast() {
   if (seatWs) {
@@ -773,6 +1039,50 @@ function bindSeatCast() {
     send({ type: "mouse", event: "mouseWheel", x: p.x, y: p.y, button: "none", deltaX: e.deltaX, deltaY: e.deltaY, modifiers: mods(e) });
   };
   canvas.oncontextmenu = (e) => e.preventDefault();
+  const ime = $("#seat-ime");
+  let imeQuietUntil = 0;
+  let imeCommittedAt = 0;
+  let forwardedKey = false;
+  const pushIme = createImePump((phase, text, seq) => send({ type: "ime", phase, text, seq }));
+  const focusIme = (e) => {
+    if (!ime) return;
+    pinImeField(ime, e?.offsetX ?? e?.clientX, e?.offsetY ?? e?.clientY);
+    try {
+      ime.focus({ preventScroll: true });
+    } catch {
+      ime.focus();
+    }
+  };
+  canvas.addEventListener("pointerdown", focusIme, true);
+  focusIme();
+  if (ime) {
+    ime.addEventListener("compositionstart", () => {
+      imeQuietUntil = 0;
+    });
+    ime.addEventListener("compositionupdate", (e) => {
+      pushIme("update", e.data || "");
+    });
+    ime.addEventListener("compositionend", (e) => {
+      const text = e.data || ime.value || "";
+      ime.value = "";
+      imeQuietUntil = Date.now() + 80;
+      imeCommittedAt = Date.now();
+      pushIme(text ? "commit" : "cancel", text);
+    });
+    ime.addEventListener("input", (e) => {
+      if (e.isComposing || e.inputType === "insertCompositionText") return;
+      if (forwardedKey || Date.now() - imeCommittedAt < 50) {
+        forwardedKey = false;
+        ime.value = "";
+        return;
+      }
+      const text = ime.value;
+      if (!text) return;
+      ime.value = "";
+      pushIme("commit", text);
+    });
+  }
+  const keyTarget = ime || canvas;
   const isSeatEscapeChord = (e) => {
     const cmd = e.ctrlKey || e.metaKey;
     const code = e.code || "";
@@ -786,21 +1096,24 @@ function bindSeatCast() {
     if (e.shiftKey && (letter === "T" || letter === "I" || letter === "J" || letter === "C")) return true;
     return !e.altKey && (letter === "T" || letter === "N" || letter === "L" || letter === "W" || letter === "U");
   };
-  canvas.onkeydown = (e) => {
+  keyTarget.onkeydown = (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.code === "KeyV" || e.code === "KeyC")) return;
     if (isSeatEscapeChord(e)) {
       e.preventDefault();
       return;
     }
+    if (imeKeySuppressed(e, imeQuietUntil)) return;
     e.preventDefault();
+    forwardedKey = true;
     send({ type: "key", event: "keyDown", key: e.key, code: e.code, modifiers: mods(e) });
   };
-  canvas.onkeyup = (e) => {
+  keyTarget.onkeyup = (e) => {
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.code === "KeyV" || e.code === "KeyC")) return;
     if (isSeatEscapeChord(e)) {
       e.preventDefault();
       return;
     }
+    if (imeKeySuppressed(e, imeQuietUntil)) return;
     send({ type: "key", event: "keyUp", key: e.key, code: e.code, modifiers: mods(e) });
   };
 
@@ -854,6 +1167,7 @@ function bindDesk() {
     bindSeatCast();
     bindTabClipboard();
   } else if (iframe) {
+    bindDeskIme();
     iframe.addEventListener(
       "load",
       () => {
@@ -870,8 +1184,17 @@ function bindDesk() {
   } else {
     return;
   }
-  lastPeeked = "";
-  setChip();
+  if (clipWatchDesk !== state.deskId) {
+    clipWatchDesk = state.deskId || "";
+    clipOffer = null;
+    lastClip = null;
+    lastClipEtag = "";
+    lastPeeked = "";
+    if (lastThumb) URL.revokeObjectURL(lastThumb);
+    lastThumb = "";
+  }
+  if (clipOffer) paintClipOffer();
+  else setChip();
   const chip = $("#clip-chip");
   if (chip)
     chip.onclick = async () => {
@@ -881,6 +1204,18 @@ function bindDesk() {
       }
       const ok = await copyLastToLocal();
       toast(ok ? lastClip.kind === "image" ? "图片已拷到本机" : "已拷到本机" : "没拷出去，再点一次", lastClip.kind);
+    };
+  const takeBtn = $("#take-image");
+  if (takeBtn) takeBtn.onclick = () => onTakeImage(takeBtn);
+  const offerCopy = $("#clip-offer-copy");
+  if (offerCopy) offerCopy.onclick = () => onOfferCopy();
+  const offerSave = $("#clip-offer-save");
+  if (offerSave) offerSave.onclick = () => onOfferSave();
+  const offerClose = $("#clip-offer-x");
+  if (offerClose)
+    offerClose.onclick = () => {
+      clipOffer = null;
+      paintClipOffer();
     };
   const uploadBtn = $("#upload-files");
   if (uploadBtn)
@@ -893,6 +1228,49 @@ function bindDesk() {
   bindDeskFileDrop();
   if (state.deskMode === "vnc") startChooserPoll();
   else stopChooserPoll();
+  startDownloadPoll();
+  const imageBtn = $("#download-image");
+  if (imageBtn)
+    imageBtn.onclick = async () => {
+      if (!state.deskId || imageBtn.disabled) return;
+      if (pendingLocalImage) {
+        const held = pendingLocalImage;
+        pendingLocalImage = null;
+        saveBlobLocally(held.blob, held.name);
+        toast("已开始下载到本机");
+        return;
+      }
+      imageBtn.disabled = true;
+      toast("正在从对话里取出生成图");
+      try {
+        const r = await fetch(`/api/desks/${state.deskId}/gpt-image`, { method: "POST", credentials: "same-origin" });
+        const ct = r.headers.get("content-type") || "";
+        if (!r.ok || ct.includes("application/json")) {
+          const data = await r.json().catch(() => ({}));
+          if (r.status === 401 && state.me) {
+            state.me = null;
+            setHash("/login");
+            return;
+          }
+          toast(data.error || "无法读取这张生成图");
+          return;
+        }
+        const blob = await r.blob();
+        const name = filenameFromDisposition(r.headers.get("content-disposition"));
+        if (navigator.userActivation && navigator.userActivation.isActive === false) {
+          pendingLocalImage = { blob, name };
+          toast("图片已取到。再点一次「下载图片」保存到这台电脑");
+          return;
+        }
+        saveBlobLocally(blob, name);
+        toast("已开始下载到本机");
+      } catch {
+        toast("无法读取这张生成图");
+      } finally {
+        imageBtn.disabled = false;
+      }
+    };
+  startImageDownloadPoll();
   const shareBtn = $("#share-chat");
   if (shareBtn)
     shareBtn.onclick = async () => {
@@ -921,21 +1299,62 @@ function bindDesk() {
   peekTimer = setInterval(async () => {
     if (state.view !== "desk" || !state.deskId) return;
     try {
-      const r = await fetch(`/api/desks/${state.deskId}/peek`, { credentials: "same-origin" });
+      const r = await fetch(`/api/desks/${state.deskId}/peek`, {
+        credentials: "same-origin",
+        headers: lastClipEtag ? { "if-none-match": lastClipEtag } : {},
+      });
       if (r.status === 401 && state.me) {
         state.me = null;
         setHash("/login");
         return;
       }
-      if (!r.ok) return;
+      if (r.status === 204 || !r.ok) return;
+      const etag = r.headers.get("etag") || "";
+      if (etag) lastClipEtag = etag;
       const mime = r.headers.get("content-type") || "";
-      if (!mime.startsWith("text/")) return;
+      const share = clientShareUrl(r.headers.get("x-gpc-share") || "");
+      if (mime.startsWith("image/")) {
+        const buf = await r.arrayBuffer();
+        if (buf.byteLength) presentImage(buf, mime, share);
+        return;
+      }
       const text = (await r.text()).trim();
-      if (isShareLink(text)) await adoptDeskText(text);
+      const url = share || clientShareUrl(text);
+      if (url) presentShare(url);
     } catch {
       /* ignore */
     }
   }, 2000);
+}
+
+async function onTakeImage(btn) {
+  if (!state.deskId) return;
+  const early = armPngWrite();
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/desks/${state.deskId}/image`, { method: "POST", credentials: "same-origin" });
+    if (!r.ok) {
+      early?.cancel();
+      const data = await r.json().catch(() => ({}));
+      toast(data.error || "没找到图片");
+      return;
+    }
+    const mime = (r.headers.get("content-type") || "image/png").split(";")[0];
+    const share = clientShareUrl(r.headers.get("x-gpc-share") || "");
+    const buf = await r.arrayBuffer();
+    const blob = new Blob([buf], { type: mime });
+    const png = /png/i.test(mime) ? blob : await blobAsPng(blob);
+    const copied = early ? await early.fulfill(png || blob) : false;
+    const out = png || blob;
+    const bytes = out === blob ? buf : await out.arrayBuffer();
+    presentImage(bytes, out.type || mime, share, { toastIt: false });
+    toast(copied ? "图片已复制到本机" : "图片已取出。点「复制到本机」，若浏览器拦住剪贴板就点「下载」。", "image");
+  } catch {
+    early?.cancel();
+    toast("没找到图片");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function ensureOsFileInput() {
@@ -1024,11 +1443,180 @@ async function onRemoteFileChooser(mode) {
   toast(r.ok ? "已添加到对话" : r.error || "无法上传文件");
 }
 
+function filenameFromDisposition(header) {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header || "");
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      /* fall through */
+    }
+  }
+  const plain = /filename="([^"]+)"/i.exec(header || "");
+  return plain?.[1] || "ChatGPT-image.png";
+}
+
+function saveBlobLocally(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name || "ChatGPT-image.png";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
 let chooserPoll = 0;
+let imageDownloadPoll = 0;
+let imagePollDesk = "";
+let pendingLocalImage = null;
+const savedImageIds = new Set();
 
 function stopChooserPoll() {
   chooserPoll += 1;
 }
+
+let downloadPoll = 0;
+const downloadedIds = new Set();
+
+function stopDownloadPoll() {
+  downloadPoll += 1;
+  const menu = $("#download-menu");
+  if (menu) menu.hidden = true;
+}
+
+function triggerLocalDownload(id, file) {
+  const a = document.createElement("a");
+  a.href = `/api/desks/${id}/downloads/${encodeURIComponent(file.id)}`;
+  a.download = file.name || "download";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function paintDownloadMenu(files) {
+  const menu = $("#download-menu");
+  const count = $("#dl-count");
+  if (count) {
+    const n = (files || []).length;
+    count.hidden = !n;
+    count.textContent = n > 9 ? "9+" : String(n || "");
+  }
+  if (!menu || menu.hidden) return;
+  if (!files?.length) {
+    menu.innerHTML = `<p class="empty">还没有可下载的文件。保存图片后会自动下载到这台电脑，也可以在这里再取一次。</p>`;
+    return;
+  }
+  menu.innerHTML = files
+    .map(
+      (f) =>
+        `<button type="button" data-dl="${esc(f.id)}" data-name="${esc(f.name)}">${ICO.download}<span>${esc(f.name)}</span></button>`,
+    )
+    .join("");
+  menu.querySelectorAll("[data-dl]").forEach((btn) => {
+    btn.onclick = () => {
+      const file = { id: btn.getAttribute("data-dl"), name: btn.getAttribute("data-name") || "download" };
+      triggerLocalDownload(state.deskId, file);
+      toast("已开始下载到本机");
+    };
+  });
+}
+
+async function startDownloadPoll() {
+  const ticket = ++downloadPoll;
+  const id = state.deskId;
+  let files = [];
+  const btn = $("#download-files");
+  const menu = $("#download-menu");
+  if (btn && menu) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      menu.hidden = !menu.hidden;
+      paintDownloadMenu(files);
+    };
+    if (document.documentElement.dataset.gpcDl !== "1") {
+      document.documentElement.dataset.gpcDl = "1";
+      document.addEventListener("click", (e) => {
+        if (e.target.closest?.("#download-files, #download-menu")) return;
+        const open = $("#download-menu");
+        if (open) open.hidden = true;
+      });
+    }
+  }
+  while (ticket === downloadPoll && state.view === "desk" && state.deskId === id) {
+    try {
+      const r = await fetch(`/api/desks/${id}/downloads`, { credentials: "same-origin" });
+      if (ticket !== downloadPoll) return;
+      if (r.status === 401 && state.me) {
+        state.me = null;
+        setHash("/login");
+        return;
+      }
+      if (!r.ok) {
+        await new Promise((ok) => setTimeout(ok, 1500));
+        continue;
+      }
+      const data = await r.json().catch(() => ({}));
+      files = Array.isArray(data.files) ? data.files : [];
+      paintDownloadMenu(files);
+      const fresh = files.filter((f) => f.auto && f.id && !downloadedIds.has(f.id));
+      for (const f of fresh) {
+        downloadedIds.add(f.id);
+        triggerLocalDownload(id, f);
+      }
+      if (fresh.length) toast(fresh.length > 1 ? "文件已开始下载到本机" : "已开始下载到本机。若没有弹出，点顶栏「下载」");
+    } catch {
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
+  }
+}
+
+function stopImageDownloadPoll() {
+  imageDownloadPoll += 1;
+  pendingLocalImage = null;
+}
+
+async function startImageDownloadPoll() {
+  const ticket = ++imageDownloadPoll;
+  const id = state.deskId;
+  if (imagePollDesk !== id) {
+    imagePollDesk = id;
+    pendingLocalImage = null;
+  }
+  while (ticket === imageDownloadPoll && state.view === "desk" && state.deskId === id) {
+    try {
+      const r = await fetch(`/api/desks/${id}/image-downloads`, { credentials: "same-origin" });
+      if (ticket !== imageDownloadPoll) return;
+      if (r.status === 401 && state.me) {
+        state.me = null;
+        setHash("/login");
+        return;
+      }
+      if (!r.ok) {
+        await new Promise((ok) => setTimeout(ok, 1500));
+        continue;
+      }
+      const data = await r.json().catch(() => ({}));
+      const files = Array.isArray(data.files) ? data.files : [];
+      const fresh = files.filter((f) => f.auto && f.id && !savedImageIds.has(f.id));
+      for (const f of fresh) {
+        savedImageIds.add(f.id);
+        const file = await fetch(`/api/desks/${id}/image-downloads/${encodeURIComponent(f.id)}`, { credentials: "same-origin" });
+        if (!file.ok) continue;
+        const blob = await file.blob();
+        const name = filenameFromDisposition(file.headers.get("content-disposition")) || f.name || "ChatGPT-image.png";
+        saveBlobLocally(blob, name);
+      }
+      if (fresh.length) toast("图片已开始下载到本机。若没有弹出，再点「下载图片」");
+    } catch {
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
+  }
+}
+
 
 async function startChooserPoll() {
   const ticket = ++chooserPoll;
@@ -1084,40 +1672,51 @@ async function sendDeskPaste(body, mime) {
   return { ok: true };
 }
 
-async function copyFromDesk() {
+async function copyFromDesk(early) {
   const id = state.deskId;
-  if (!id) return false;
+  if (!id) {
+    early?.cancel();
+    return false;
+  }
   setChip("copying");
   const r = await fetch(`/api/desks/${id}/copy`, { method: "POST", credentials: "same-origin" });
   if (!r.ok) {
+    early?.cancel();
     setChip("waiting");
     toast("没复制到");
     return false;
   }
-  const mime = r.headers.get("content-type") || "text/plain";
+  const mime = (r.headers.get("content-type") || "text/plain").split(";")[0];
+  const share = clientShareUrl(r.headers.get("x-gpc-share") || "");
   const buf = await r.arrayBuffer();
   if (mime.startsWith("image/")) {
     const blob = new Blob([buf], { type: mime });
-    const file = new File([blob], "image.png", { type: mime });
-    if (lastThumb) URL.revokeObjectURL(lastThumb);
-    lastThumb = URL.createObjectURL(file);
-    lastClip = { kind: "image", body: buf, mime, text: "", thumb: lastThumb };
-    setChip("image");
-    const ok = await writeToLocal("", blob);
-    toast(ok ? "图片已复制到本机" : "已记下图片，点顶栏图标拷到本机", "image");
-    return ok;
+    const png = /png/i.test(mime) ? blob : await blobAsPng(blob);
+    const out = png || blob;
+    const copied = early ? await early.fulfill(out) : await writeToLocal("", out);
+    const bytes = out === blob ? buf : await out.arrayBuffer();
+    presentImage(bytes, out.type || mime, share, { toastIt: false });
+    toast(copied ? "图片已复制到本机" : "图片已取出。点「复制到本机」，或点「下载」。", "image");
+    return copied;
   }
+  early?.cancel();
   const text = new TextDecoder().decode(buf);
-  if (!text) {
+  const shareText = share || clientShareUrl(text);
+  if (!text.trim() && !shareText) {
     setChip("waiting");
     toast("没有选中的内容");
     return false;
   }
-  lastClip = { kind: "text", body: text, mime: "text/plain; charset=utf-8", text, thumb: "" };
-  setChip("text", text);
-  const ok = await writeToLocal(text, null);
-  const preview = text.replace(/\s+/g, " ").trim().slice(0, 18);
-  toast(ok ? `已复制到本机「${preview}${text.trim().length > 18 ? "…" : ""}」` : "已记下，点顶栏即可拷到本机");
+  if (shareText && (!text.trim() || text.trim().split(/\s+/)[0] === shareText || clientShareUrl(text) === shareText)) {
+    presentShare(shareText, { toastIt: false });
+  } else {
+    lastClip = { kind: "text", body: text, mime: "text/plain; charset=utf-8", text, thumb: "" };
+    setChip("text", text);
+  }
+  const shown = (shareText && text.trim() === shareText ? shareText : text).replace(/\s+/g, " ").trim();
+  const ok = await writeToLocal(shown, null);
+  const preview = shown.slice(0, 18);
+  toast(ok ? `已复制到本机「${preview}${shown.length > 18 ? "…" : ""}」` : "已记下，点「复制链接」或顶栏即可拷到本机");
   return ok;
 }
 
@@ -1135,9 +1734,23 @@ function bindClipboard(iframe) {
   doc.documentElement.dataset.gpcClip = "1";
 
   const st = doc.createElement("style");
-  st.textContent =
-    "#noVNC_keyboardinput{width:2px!important;height:2px!important;opacity:.01!important;overflow:hidden!important;}";
+  st.textContent = VNC_IME_CSS;
   (doc.head || doc.documentElement).appendChild(st);
+  const armIme = () => {
+    enableKasmIme(win);
+    bindVncIme(win, doc);
+    const kb = doc.getElementById("noVNC_keyboardinput");
+    if (kb) {
+      const left = parseFloat(kb.style.left);
+      if (!Number.isFinite(left) || left < 0) pinImeField(kb, 12, 12);
+    }
+    for (const lab of doc.querySelectorAll("label")) {
+      if (!/IME/i.test(lab.textContent || "")) continue;
+      const input = lab.querySelector("input") || (lab.htmlFor ? doc.getElementById(lab.htmlFor) : null);
+      if (input && input.type === "checkbox" && !input.checked) input.click();
+    }
+  };
+  armIme();
 
   const remember = (kind, body, mime, text, file) => {
     if (lastThumb) URL.revokeObjectURL(lastThumb);
@@ -1189,7 +1802,8 @@ function bindClipboard(iframe) {
       if (isCopyChord(e)) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        copyFromDesk().catch(() => {});
+        const early = armPngWrite();
+        copyFromDesk(early).catch(() => early?.cancel());
         return;
       }
       if (!isPasteChord(e)) return;
@@ -1250,8 +1864,236 @@ function bindClipboard(iframe) {
     }
   };
   hookRfb();
-  const iv = setInterval(hookRfb, 400);
+  const iv = setInterval(() => {
+    hookRfb();
+    armIme();
+  }, 400);
   setTimeout(() => clearInterval(iv), 20000);
+}
+
+function postDeskIme(phase, text, seq) {
+  const id = state.deskId;
+  if (!id || state.view !== "desk" || state.deskMode === "tab") return;
+  fetch(`/api/desks/${id}/ime`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phase, text, seq }),
+  }).catch(() => {});
+}
+
+const VNC_LATIN_KEYSYM = {
+  Enter: 0xff0d,
+  Backspace: 0xff08,
+  Tab: 0xff09,
+  Escape: 0xff1b,
+  Delete: 0xffff,
+  ArrowLeft: 0xff51,
+  ArrowUp: 0xff52,
+  ArrowRight: 0xff53,
+  ArrowDown: 0xff54,
+  Home: 0xff50,
+  End: 0xff57,
+  PageUp: 0xff55,
+  PageDown: 0xff56,
+};
+
+function vncKeysym(key) {
+  if (!key) return 0;
+  if (VNC_LATIN_KEYSYM[key]) return VNC_LATIN_KEYSYM[key];
+  if (key.length !== 1) return 0;
+  const code = key.codePointAt(0);
+  if (code >= 0x20 && code <= 0xff) return code;
+  return 0;
+}
+
+function forwardVncKey(win, e, down) {
+  if (!e || e.ctrlKey || e.metaKey || e.altKey) return false;
+  const rfb = win?.UI?.rfb;
+  if (!rfb || typeof rfb.sendKey !== "function") return false;
+  const keysym = vncKeysym(e.key);
+  if (!keysym) return false;
+  try {
+    rfb.sendKey(keysym, e.code || null, down);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function imeComposingEvent(e) {
+  return !!(e && (e.isComposing || e.keyCode === 229 || e.key === "Process" || e.key === "Unidentified"));
+}
+
+function bindDeskIme() {
+  const btn = $("#desk-ime-btn");
+  const ime = $("#desk-ime");
+  if (!ime || ime.dataset.gpcIme === "1") return;
+  ime.dataset.gpcIme = "1";
+  const pump = createImePump(postDeskIme);
+  let quietUntil = 0;
+  let committedAt = 0;
+  const show = (on) => {
+    if (btn) btn.setAttribute("aria-pressed", on ? "true" : "false");
+    ime.hidden = !on;
+    if (!on) return;
+    try {
+      ime.focus({ preventScroll: true });
+    } catch {
+      ime.focus();
+    }
+  };
+  if (btn) {
+    btn.onclick = () => {
+      if (!ime.hidden) {
+        ime.value = "";
+        pump("cancel", "");
+        show(false);
+        return;
+      }
+      show(true);
+    };
+  }
+  ime.addEventListener("compositionstart", () => {
+    quietUntil = 0;
+  });
+  ime.addEventListener("compositionupdate", (e) => {
+    pump("update", e.data || "");
+  });
+  ime.addEventListener("compositionend", (e) => {
+    const text = e.data || ime.value || "";
+    ime.value = "";
+    quietUntil = Date.now() + 80;
+    committedAt = Date.now();
+    pump(text ? "commit" : "cancel", text);
+  });
+  ime.addEventListener("input", (e) => {
+    if (e.isComposing || e.inputType === "insertCompositionText") return;
+    if (Date.now() - committedAt < 50) {
+      ime.value = "";
+      return;
+    }
+    const text = ime.value;
+    if (!text) return;
+    ime.value = "";
+    pump("commit", text);
+  });
+  ime.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !imeComposingEvent(e)) {
+      e.preventDefault();
+      ime.value = "";
+      pump("cancel", "");
+      show(false);
+    } else if (imeKeySuppressed(e, quietUntil)) {
+      e.stopPropagation();
+    }
+  });
+}
+
+function bindVncIme(win, doc) {
+  const kb = doc.getElementById("noVNC_keyboardinput");
+  if (!kb || kb.dataset.gpcIme === "1") return;
+  kb.dataset.gpcIme = "1";
+  kb.setAttribute("lang", "zh-CN");
+  kb.setAttribute("autocomplete", "off");
+  pinImeField(kb, 12, 12);
+  const pump = createImePump(postDeskIme);
+  const swallow = (e) => e.stopImmediatePropagation();
+  let swallowInput = false;
+  kb.addEventListener(
+    "compositionstart",
+    (e) => {
+      swallowInput = true;
+      swallow(e);
+    },
+    true,
+  );
+  kb.addEventListener(
+    "compositionupdate",
+    (e) => {
+      swallow(e);
+      pump("update", e.data || "");
+    },
+    true,
+  );
+  kb.addEventListener(
+    "compositionend",
+    (e) => {
+      swallow(e);
+      swallowInput = true;
+      const text = e.data || "";
+      kb.value = "";
+      pump(text ? "commit" : "cancel", text);
+    },
+    true,
+  );
+  kb.addEventListener(
+    "input",
+    (e) => {
+      if (swallowInput || e.isComposing || e.inputType === "insertCompositionText") {
+        swallowInput = !!(e.isComposing || e.inputType === "insertCompositionText");
+        kb.value = "";
+        swallow(e);
+        return;
+      }
+      const text = kb.value;
+      kb.value = "";
+      if (text && /[^\u0000-\u00ff]/.test(text)) pump("commit", text);
+    },
+    true,
+  );
+  kb.addEventListener(
+    "keydown",
+    (e) => {
+      if (imeComposingEvent(e)) swallow(e);
+    },
+    true,
+  );
+  kb.addEventListener(
+    "keyup",
+    (e) => {
+      if (imeComposingEvent(e)) swallow(e);
+    },
+    true,
+  );
+  const held = new Set();
+  const scheduleVncKey = (e, down) => {
+    if (imeComposingEvent(e)) return;
+    const token = e.code || e.key || "";
+    const snap = { key: e.key, code: e.code, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey };
+    setTimeout(() => {
+      if (e.defaultPrevented) return;
+      if (!down) {
+        if (!held.has(token)) return;
+        held.delete(token);
+      }
+      if (!forwardVncKey(win, snap, down)) return;
+      if (down) held.add(token);
+    }, 0);
+  };
+  kb.addEventListener("keydown", (e) => scheduleVncKey(e, true));
+  kb.addEventListener("keyup", (e) => scheduleVncKey(e, false));
+  const focusKb = () => {
+    if (state.view !== "desk" || state.deskMode === "tab") return;
+    const parentIme = document.getElementById("desk-ime");
+    if (parentIme && !parentIme.hidden && document.activeElement === parentIme) return;
+    try {
+      kb.focus({ preventScroll: true });
+    } catch {
+      kb.focus();
+    }
+  };
+  win.addEventListener(
+    "pointerdown",
+    (e) => {
+      pinImeField(kb, e.clientX, e.clientY);
+      enableKasmIme(win);
+      focusKb();
+      setTimeout(focusKb, 0);
+      setTimeout(focusKb, 48);
+    },
+    true,
+  );
 }
 
 const workspaceBusy = new Set();
@@ -1292,7 +2134,8 @@ function bindTabClipboard() {
       if (state.view !== "desk" || state.deskMode !== "tab") return;
       if (!isCopyChord(e)) return;
       e.preventDefault();
-      copyFromDesk().catch(() => {});
+      const early = armPngWrite();
+      copyFromDesk(early).catch(() => early?.cancel());
     },
     true,
   );
