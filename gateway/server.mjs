@@ -10,15 +10,27 @@ import { createDockerClient, deskContainerName, ensureDeskContainer, removeDeskC
 import { createUserStore } from "../lib/users.mjs";
 import { createPresence } from "../lib/presence.mjs";
 import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
-import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
+import { evaluateInDesk, waitForDesk, peekClipboard, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
+import {
+  clipEtag,
+  clipPayloadFromBytes,
+  extractShareUrl,
+  installClipCapture,
+  pickDeskImage,
+  readCapturedClip,
+  seenSeqFromEtag,
+  shareHeaderValue,
+} from "../lib/clip-capture.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskBrowserWs, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, targetExists } from "../lib/cdp.mjs";
+import { attachSeatTarget, closeTarget, createParkedChatGPTTab, deskBrowserWs, deskBrowsers, evaluateOnSession, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, targetExists } from "../lib/cdp.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
 import { applyDeskUpload, armFileChooser, createChooserRegistry, FILE_TOO_BIG, FILE_UPLOAD_FAIL } from "../lib/file-chooser.mjs";
 import { stageDeskUpload } from "../lib/desk-files.mjs";
+import { applyImeCommands } from "../lib/ime.mjs";
+import { armBrowserDownloads, createDownloadHub, downloadDirSetupCommand, readContainerDownload, attachmentDisposition } from "../lib/downloads.mjs";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -54,11 +66,15 @@ const seatWss = new WebSocketServer({ noServer: true });
 const loginLimiter = createLoginLimiter({ maxFails: 10, windowMs: 15 * 60 * 1000 });
 const deskCdpLocks = new Map();
 const choosers = createChooserRegistry();
+const downloads = createDownloadHub();
 const fileWatches = new Map();
+const downloadArms = new Map();
+const imeChains = new Map();
+const imePipes = new Map();
 const FILE_BODY_MAX = 16 * 1024 * 1024;
 /** Yield so a second /open can create a tab before assist grabs the debugger. */
 const ONBOARD_YIELD_MS = 1500;
-const FILE_PIPE_WAIT_MS = 15_000;
+const FILE_PIPE_ATTEMPTS = 3;
 
 async function withDeskCdp(id, fn) {
   const prev = deskCdpLocks.get(id) || Promise.resolve();
@@ -185,11 +201,15 @@ async function closeSeatTab(seat) {
 function stopFileWatch(userId) {
   const watch = fileWatches.get(userId);
   fileWatches.delete(userId);
+  const pipe = imePipes.get(userId);
+  imePipes.delete(userId);
+  imeChains.delete(userId);
   try {
     watch?.dispose?.();
   } catch {
     /* ignore */
   }
+  Promise.resolve(pipe?.release?.()).catch(() => {});
 }
 
 async function findChatGptTargetId(deskId) {
@@ -205,25 +225,16 @@ async function findChatGptTargetId(deskId) {
 }
 
 async function ensureExclusiveFilePipe(deskId) {
-  try {
-    await deskBrowserWs(deskId);
-    return true;
-  } catch {
-    /* old desktop images start Chromium without a debugger until .gpc-cdp=1 */
-  }
-  try {
-    await applyDeskCdpLive(deskId, true);
-  } catch {
-    return false;
-  }
-  const t0 = Date.now();
-  while (Date.now() - t0 < FILE_PIPE_WAIT_MS) {
+  // Debug port and the download directory are created when the desk starts.
+  // Attaching the file pipe only waits for that port. It must not restart Chromium.
+  for (let attempt = 0; attempt < FILE_PIPE_ATTEMPTS; attempt++) {
     try {
       await deskBrowserWs(deskId);
       return true;
     } catch {
-      await sleep(400);
+      /* pipe is not up yet; the browser that is already running stays up */
     }
+    if (attempt + 1 < FILE_PIPE_ATTEMPTS) await sleep(200);
   }
   return false;
 }
@@ -235,8 +246,10 @@ async function watchExclusiveFileChooser(deskId, user) {
   const targetId = await findChatGptTargetId(deskId);
   if (!targetId) return;
   const attached = await attachSeatTarget(deskId, targetId);
+  const sendOnPage = (method, params, sid) => attached.cdp.send(method, params, sid ?? attached.sessionId);
+  installClipCapture(sendOnPage, attached.sessionId).catch(() => {});
   const armed = await armFileChooser({
-    send: (method, params, sid) => attached.cdp.send(method, params, sid ?? attached.sessionId),
+    send: sendOnPage,
     on: (fn) => attached.cdp.on(fn),
     sessionId: attached.sessionId,
     onOpened: (info) => {
@@ -245,6 +258,8 @@ async function watchExclusiveFileChooser(deskId, user) {
   });
   fileWatches.set(user.id, {
     deskId,
+    targetId,
+    send: (method, params) => attached.cdp.send(method, params, attached.sessionId),
     dispose() {
       try {
         armed.dispose?.();
@@ -255,6 +270,170 @@ async function watchExclusiveFileChooser(deskId, user) {
       choosers.clear(deskId, user.id);
     },
   });
+}
+
+function noteDeskActor(deskId, userId) {
+  downloads.noteActor(deskId, userId);
+}
+
+async function imeSender(deskId, user) {
+  const watch = fileWatches.get(user.id);
+  if (watch?.deskId === deskId && typeof watch.send === "function") return watch.send;
+  const cached = imePipes.get(user.id);
+  if (cached?.deskId === deskId && typeof cached.send === "function") return cached.send;
+  await ensureExclusiveFilePipe(deskId);
+  const seat = seats.ofUser(deskId, user.id);
+  const targetId = seat?.targetId || (await findChatGptTargetId(deskId));
+  if (!targetId) {
+    const err = new Error("输入框还没准备好");
+    err.status = 502;
+    throw err;
+  }
+  const attached = await attachSeatTarget(deskId, targetId);
+  const send = (method, params) => attached.cdp.send(method, params, attached.sessionId);
+  imePipes.set(user.id, { deskId, send, release: attached.release });
+  return send;
+}
+
+async function applyDeskIme(deskId, user, body) {
+  noteDeskActor(deskId, user.id);
+  const seq = Number(body?.seq) || 0;
+  const state = imeChains.get(user.id) || { chain: Promise.resolve(), seq: 0 };
+  if (seq && seq < state.seq) return { ok: true, skipped: true };
+  if (seq) state.seq = seq;
+  const run = state.chain.then(async () => {
+    const send = await imeSender(deskId, user);
+    return applyImeCommands(send, body);
+  });
+  state.chain = run.then(() => {}, () => {});
+  imeChains.set(user.id, state);
+  return run;
+}
+
+async function ensureDeskDownloads(deskId) {
+  if (downloadArms.has(deskId)) return;
+  const placeholder = { starting: true, dispose() {} };
+  downloadArms.set(deskId, placeholder);
+  try {
+    const ready = await ensureExclusiveFilePipe(deskId);
+    if (!ready) {
+      if (downloadArms.get(deskId) === placeholder) downloadArms.delete(deskId);
+      return;
+    }
+    try {
+      await docker.exec(deskContainerName(deskId), downloadDirSetupCommand());
+      await sleep(400);
+    } catch {
+      /* directory is best-effort; CDP still reports the download */
+    }
+    const cdp = await deskBrowsers.get(deskId);
+    const armed = await armBrowserDownloads({
+      send: (method, params) => cdp.send(method, params),
+      on: (fn) => cdp.on(fn),
+      onFile: (meta) => {
+        const occupants = presence.list(deskId).map((v) => v.id);
+        downloads.complete(deskId, meta, { occupants });
+      },
+    });
+    if (downloadArms.get(deskId) !== placeholder) {
+      armed.dispose?.();
+      return;
+    }
+    downloadArms.set(deskId, armed);
+    cdp.ws?.addEventListener?.("close", () => {
+      if (downloadArms.get(deskId) === armed) downloadArms.delete(deskId);
+    });
+  } catch {
+    if (downloadArms.get(deskId) === placeholder) downloadArms.delete(deskId);
+  }
+}
+
+function writeClip(res, payload, inm = "") {
+  const etag = payload.etag || clipEtag(payload);
+  if (inm && inm === etag) {
+    res.writeHead(204, { etag, "cache-control": "no-store" });
+    res.end();
+    return;
+  }
+  const headers = {
+    etag,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  };
+  const share = shareHeaderValue(payload.text);
+  if (share && payload.kind === "image") headers["x-gpc-share"] = share;
+  if (payload.kind === "image") {
+    headers["content-type"] = payload.mime;
+    headers["content-length"] = String(payload.buf.length);
+    headers["x-gpc-kind"] = "image";
+    res.writeHead(200, headers);
+    res.end(payload.buf);
+    return;
+  }
+  const buf = Buffer.from(payload.text, "utf8");
+  headers["content-type"] = "text/plain; charset=utf-8";
+  headers["content-length"] = String(buf.length);
+  headers["x-gpc-kind"] = "share";
+  res.writeHead(200, headers);
+  res.end(buf);
+}
+
+function endEmptyClip(res) {
+  res.writeHead(204, { "cache-control": "no-store" });
+  res.end();
+}
+
+async function withMemberPage(id, user, fn) {
+  const tab = seats.ofUser(id, user.id);
+  const mode = tab?.mode === "tab" ? "tab" : "vnc";
+  let targetId = mode === "tab" ? tab.targetId : "";
+  if (!targetId && mode === "tab") return null;
+  if (!targetId) {
+    try {
+      await deskBrowserWs(id);
+    } catch {
+      return null;
+    }
+    targetId = await findChatGptTargetId(id);
+  }
+  if (!targetId) return null;
+  const attached = await attachSeatTarget(id, targetId);
+  try {
+    const send = (method, params, sid) => attached.cdp.send(method, params, sid ?? attached.sessionId);
+    const evaluate = (expression) => evaluateOnSession(attached.cdp, attached.sessionId, expression, 12000);
+    const install = () => installClipCapture(send, attached.sessionId);
+    return await fn({ send, evaluate, install, mode, targetId });
+  } finally {
+    await attached.release();
+  }
+}
+
+async function capturedClip(id, user, seenSeq) {
+  try {
+    const out = await withMemberPage(id, user, ({ evaluate, install, mode }) =>
+      readCapturedClip({ evaluate, install, seenSeq }).then((payload) => ({ mode, payload })),
+    );
+    if (!out) return { mode: seats.ofUser(id, user.id)?.mode || "vnc", payload: null };
+    return out;
+  } catch {
+    return { mode: seats.ofUser(id, user.id)?.mode || "vnc", payload: null };
+  }
+}
+
+async function takeMemberImage(id, user) {
+  try {
+    const out = await withMemberPage(id, user, ({ evaluate, install }) => pickDeskImage({ evaluate, install }));
+    if (!out) return { ok: false, status: 502, error: "画面还没准备好" };
+    return out;
+  } catch {
+    return { ok: false, status: 502, error: "没能取出图片" };
+  }
+}
+
+function clipBodyBlank(ct, buf) {
+  if (!buf || !buf.length) return true;
+  if (String(ct || "").startsWith("text/") && !buf.toString("utf8").trim()) return true;
+  return false;
 }
 
 async function readFileUploadBody(req) {
@@ -322,8 +501,17 @@ proxy.on("proxyRes", (proxyRes) => {
   delete proxyRes.headers["cross-origin-opener-policy"];
   delete proxyRes.headers["cross-origin-resource-policy"];
 });
-proxy.on("error", (err, _req, res) => {
+proxy.on("error", (err, req, res) => {
   console.error("proxy error:", err.message);
+  const code = `${err?.code || ""} ${err?.message || ""}`;
+  if (/EAI_AGAIN|ENOTFOUND|ECONNREFUSED|EHOSTUNREACH/.test(code)) {
+    const deskId = parseCookie(req?.headers?.cookie || "")[DESK];
+    if (deskId && registry.has(deskId)) {
+      ensureDeskContainer(deskId, docker, { enableCdp: users.deskCdpOn(deskId) }).catch((e) => {
+        console.error(`desk ${deskId}: ${e.message}`);
+      });
+    }
+  }
   if (res && !res.headersSent && typeof res.writeHead === "function") {
     res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
     res.end("暂时无法连接");
@@ -599,6 +787,11 @@ async function handleApi(req, res, url, sess) {
   if (open && req.method === "POST") {
     const id = open[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    try {
+      await ensureDeskContainer(id, docker, { enableCdp: users.deskCdpOn(id) });
+    } catch (e) {
+      console.error(`desk ${id}: ${e.message}`);
+    }
     const cdp = users.deskCdpOn(id);
     const extraOccupants = presence.list(id).map((v) => ({ userId: v.id }));
     let decision;
@@ -647,6 +840,8 @@ async function handleApi(req, res, url, sess) {
     }
     setCookie(res, DESK, id, Math.floor(TTL_MS / 1000));
     presence.beat(id, sess.user);
+    noteDeskActor(id, sess.user.id);
+    ensureDeskDownloads(id).catch(() => {});
     if (cdp && projectUrl) armSeatProjectJail(seat, projectUrl).catch(() => {});
     if (cdp) kickOnboard(id, sess.user, seat?.targetId);
     if (seat?.mode === "vnc") {
@@ -662,6 +857,7 @@ async function handleApi(req, res, url, sess) {
   if (paste && req.method === "POST") {
     const id = paste[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    noteDeskActor(id, sess.user.id);
     const chunks = [];
     for await (const c of req) chunks.push(c);
     const body = Buffer.concat(chunks);
@@ -704,6 +900,7 @@ async function handleApi(req, res, url, sess) {
   if (filesApi && req.method === "POST") {
     const id = filesApi[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    noteDeskActor(id, sess.user.id);
     let body;
     try {
       body = await readFileUploadBody(req);
@@ -714,6 +911,54 @@ async function handleApi(req, res, url, sess) {
     if (!out.ok) return json(res, out.status || 502, { error: out.error || FILE_UPLOAD_FAIL });
     return json(res, 200, { ok: true, kind: out.kind || (out.cancelled ? "cancel" : "file") });
   }
+  const imeApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/ime$/);
+  if (imeApi && req.method === "POST") {
+    const id = imeApi[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (e) {
+      return json(res, e.message === "body too large" ? 413 : 400, { error: "输入过长" });
+    }
+    try {
+      const out = await applyDeskIme(id, sess.user, body);
+      if (!out?.ok) return json(res, out?.status || 400, { error: out?.error || "无法输入" });
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      return json(res, e.status || 502, { error: e.message || "无法输入" });
+    }
+  }
+  const downloadFile = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/downloads\/([A-Za-z0-9-]{8,80})$/);
+  if (downloadFile && req.method === "GET") {
+    const id = downloadFile[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const item = downloads.get(id, downloadFile[2]);
+    if (!item) return json(res, 404, { error: "文件还没准备好" });
+    try {
+      const bytes = await readContainerDownload(docker, deskContainerName(id), item.containerPath);
+      res.writeHead(200, {
+        "content-type": item.mime || "application/octet-stream",
+        "content-disposition": attachmentDisposition(item.name),
+        "content-length": String(bytes.length),
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(bytes);
+      return;
+    } catch (e) {
+      return json(res, e.status || 404, { error: e.message || "文件还没准备好" });
+    }
+  }
+  const downloadList = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/downloads$/);
+  if (downloadList && req.method === "GET") {
+    const id = downloadList[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    ensureDeskDownloads(id).catch(() => {});
+    await downloads.wait(id, sess.user.id, 20_000);
+    const files = downloads.listFor(id, sess.user.id, { consumeAuto: true });
+    return json(res, 200, { files });
+  }
   const chooserApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/file-chooser$/);
   if (chooserApi && req.method === "GET") {
     const id = chooserApi[1];
@@ -722,6 +967,15 @@ async function handleApi(req, res, url, sess) {
     if (!opened) return json(res, 200, { open: false });
     return json(res, 200, { open: true, mode: opened.mode || "selectSingle" });
   }
+  const imageApi = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/image$/);
+  if (imageApi && req.method === "POST") {
+    const id = imageApi[1];
+    if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const out = await takeMemberImage(id, sess.user);
+    if (!out?.ok) return json(res, out?.status || 502, { error: out?.error || "没能取出图片" });
+    writeClip(res, out.payload, "");
+    return;
+  }
   const copy = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/copy$/);
   if (copy && req.method === "POST") {
     const id = copy[1];
@@ -729,47 +983,91 @@ async function handleApi(req, res, url, sess) {
     const tab = seats.ofUser(id, sess.user.id);
     if (tab?.mode === "tab") {
       try {
-        const text = await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ);
-        const buf = Buffer.from(String(text || ""), "utf8");
-        res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-        res.end(buf);
-        return;
+        const text = String((await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ)) || "");
+        if (text.trim()) {
+          const buf = Buffer.from(text, "utf8");
+          res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+          res.end(buf);
+          return;
+        }
       } catch {
-        return json(res, 502, { error: "无法复制" });
+        /* fall through to the page capture */
       }
+      const cap = await capturedClip(id, sess.user, 0);
+      if (cap.payload?.kind) {
+        writeClip(res, cap.payload, "");
+        return;
+      }
+      return json(res, 502, { error: "无法复制" });
     }
     try {
       const r = await fetch(`http://desktop-${id}:18790/grab`, { method: "POST" });
-      if (!r.ok) return json(res, 502, { error: "无法复制" });
-      const buf = Buffer.from(await r.arrayBuffer());
-      const ct = r.headers.get("content-type") || "text/plain; charset=utf-8";
-      res.writeHead(200, { "content-type": ct, "cache-control": "no-store" });
-      res.end(buf);
-      return;
+      if (r.ok) {
+        const buf = Buffer.from(await r.arrayBuffer());
+        const ct = r.headers.get("content-type") || "text/plain; charset=utf-8";
+        if (!clipBodyBlank(ct, buf)) {
+          const headers = { "content-type": ct, "cache-control": "no-store" };
+          const share = shareHeaderValue(r.headers.get("x-gpc-share") || "");
+          if (share) headers["x-gpc-share"] = share;
+          res.writeHead(200, headers);
+          res.end(buf);
+          return;
+        }
+      }
     } catch {
-      return json(res, 502, { error: "无法复制" });
+      /* desk clipboard is optional when the page capture has the image */
     }
+    const cap = await capturedClip(id, sess.user, 0);
+    if (cap.payload?.kind) {
+      writeClip(res, cap.payload, "");
+      return;
+    }
+    return json(res, 502, { error: "无法复制" });
   }
   const peek = url.pathname.match(/^\/api\/desks\/([a-z0-9-]+)\/peek$/);
   if (peek && req.method === "GET") {
     const id = peek[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    const inm = String(req.headers["if-none-match"] || "");
+    const cap = await capturedClip(id, sess.user, seenSeqFromEtag(inm));
+    if (cap.payload?.unchanged) {
+      res.writeHead(204, { etag: inm, "cache-control": "no-store" });
+      res.end();
+      return;
+    }
+    if (cap.payload?.kind) {
+      writeClip(res, cap.payload, inm);
+      return;
+    }
     const tab = seats.ofUser(id, sess.user.id);
     if (tab?.mode === "tab") {
       try {
-        const text = await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ);
-        const buf = Buffer.from(String(text || ""), "utf8");
-        res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-        res.end(buf);
+        const text = String((await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ)) || "");
+        const urlOnly = extractShareUrl(text);
+        if (urlOnly) {
+          writeClip(res, { kind: "text", seq: 0, text: urlOnly }, inm);
+          return;
+        }
+        endEmptyClip(res);
         return;
       } catch {
         return json(res, 502, { error: "无法读取剪贴板" });
       }
     }
     try {
-      const { ct, buf } = await peekClipboard(id);
-      res.writeHead(200, { "content-type": ct, "cache-control": "no-store" });
-      res.end(buf);
+      const peeked = await peekClipboard(id, { etag: inm });
+      if (peeked.notModified) {
+        res.writeHead(204, { etag: peeked.etag || inm, "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+      const payload = clipPayloadFromBytes({ mime: peeked.ct, buf: peeked.buf, share: peeked.share });
+      if (!payload) {
+        endEmptyClip(res);
+        return;
+      }
+      if (peeked.etag && /xclip-/i.test(peeked.etag)) payload.etag = peeked.etag;
+      writeClip(res, payload, inm);
       return;
     } catch {
       return json(res, 502, { error: "无法读取剪贴板" });
@@ -786,14 +1084,18 @@ async function handleApi(req, res, url, sess) {
       if (!clicked?.ok) return json(res, 400, { error: clicked?.error || "分享失败" });
       await sleep(400);
       let text = "";
-      if (tab?.mode === "tab" && tab.targetId) {
+      const cap = await capturedClip(id, sess.user, 0);
+      if (cap.payload?.kind === "text") text = cap.payload.text;
+      else if (cap.payload?.text) text = cap.payload.text;
+      if (!extractShareUrl(text) && tab?.mode === "tab" && tab.targetId) {
         text = String((await evaluateOnTarget(id, tab.targetId, TAB_CLIP_READ)) || "").trim();
-      } else {
-        const { buf } = await peekClipboard(id);
-        text = buf.toString("utf8").trim();
+      } else if (!extractShareUrl(text)) {
+        const peeked = await peekClipboard(id);
+        text = extractShareUrl(peeked.share) || peeked.buf.toString("utf8").trim();
       }
-      if (!isShareUrl(text)) return json(res, 200, { ok: true, url: "" });
-      return json(res, 200, { ok: true, url: text.split(/\s+/)[0] });
+      const shareUrl = extractShareUrl(text);
+      if (!shareUrl) return json(res, 200, { ok: true, url: "" });
+      return json(res, 200, { ok: true, url: shareUrl });
     } catch (e) {
       return json(res, 502, { error: e.message || "分享失败" });
     }
@@ -943,7 +1245,11 @@ server.on("upgrade", (req, socket, head) => {
     seatWss.handleUpgrade(req, socket, head, (ws) => {
       liveSockets.add(sess.user.id, ws);
       seats.beat(seat.id);
-      startSeatScreencast({ ws, seat }).catch((err) => {
+      startSeatScreencast({
+      ws,
+      seat,
+      onActivity: () => noteDeskActor(seat.deskId, seat.userId),
+    }).catch((err) => {
         console.error("seat stream:", err.message);
         try {
           ws.close();

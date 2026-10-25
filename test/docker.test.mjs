@@ -246,3 +246,128 @@ describe("removeDeskContainer", () => {
     }
   });
 });
+
+function startRemovalMock(script) {
+  const dir = mkdtempSync(join(tmpdir(), "gpc-dock-rm-"));
+  const socketPath = join(dir, "docker.sock");
+    const state = { created: 0, started: 0, deskInspects: 0 };
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, "http://docker.local");
+    const path = url.pathname.replace(/^\/v1\.\d+/, "");
+    const send = (code, body) => {
+      if (body === undefined) {
+        res.writeHead(code);
+        res.end();
+        return;
+      }
+      res.writeHead(code, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+    };
+    if (req.method === "GET" && path === "/version") {
+      send(200, { ApiVersion: "1.48", MinAPIVersion: "1.44", Version: "28.0.0" });
+      return;
+    }
+    if (req.method === "GET" && path === "/containers/gpt-pro-cloud-a/json") {
+      send(200, TEMPLATE);
+      return;
+    }
+    if (req.method === "GET" && path === "/containers/gpt-pro-cloud-c/json") {
+      state.deskInspects += 1;
+      script.inspect(state, send);
+      return;
+    }
+    if (req.method === "POST" && path === "/containers/create") {
+      state.created += 1;
+      res.on("data", () => {});
+      res.on?.("end", () => {});
+      req.on("data", () => {});
+      req.on("end", () => send(201, { Id: "newid" }));
+      return;
+    }
+    if (req.method === "POST" && path === "/containers/gpt-pro-cloud-c/start") {
+      state.started += 1;
+      if (script.start) {
+        script.start(state, send);
+        return;
+      }
+      send(204);
+      return;
+    }
+    if (req.method === "POST" && /\/networks\/.+\/connect$/.test(path)) {
+      req.on("data", () => {});
+      req.on("end", () => send(200, {}));
+      return;
+    }
+    send(404, { message: "No such container" });
+  });
+  return new Promise((resolve) => {
+    server.listen(socketPath, () => resolve({ server, socketPath, state }));
+  });
+}
+
+describe("ensureDeskContainer recreates a container marked for removal", () => {
+  it("waits out a removal and creates the desk again", async () => {
+    const mock = await startRemovalMock({
+      inspect(state, send) {
+        if (state.deskInspects === 1) send(409, { message: "container is marked for removal" });
+        else send(404, { message: "No such container" });
+      },
+    });
+    try {
+      const client = createDockerClient({ socketPath: mock.socketPath });
+      const out = await ensureDeskContainer("c", client);
+      assert.equal(out.created, true);
+      assert.equal(out.name, "gpt-pro-cloud-c");
+      assert.equal(mock.state.created, 1);
+      assert.equal(mock.state.started, 1);
+    } finally {
+      mock.server.close();
+    }
+  });
+
+  it("treats Status=removing as gone and creates a replacement", async () => {
+    const mock = await startRemovalMock({
+      inspect(state, send) {
+        if (state.deskInspects === 1) {
+          send(200, { State: { Status: "removing", Running: false }, NetworkSettings: { Networks: {} } });
+          return;
+        }
+        send(404, { message: "No such container" });
+      },
+    });
+    try {
+      const client = createDockerClient({ socketPath: mock.socketPath });
+      const out = await ensureDeskContainer("c", client);
+      assert.equal(out.created, true);
+      assert.equal(mock.state.created, 1);
+      assert.equal(mock.state.started, 1);
+    } finally {
+      mock.server.close();
+    }
+  });
+
+  it("recreates when start reports the container is marked for removal", async () => {
+    const mock = await startRemovalMock({
+      inspect(state, send) {
+        if (state.started === 0) {
+          send(200, { State: { Status: "exited", Running: false }, NetworkSettings: { Networks: { "gpt-pro-cloud_default": {} } } });
+          return;
+        }
+        send(404, { message: "No such container" });
+      },
+      start(state, send) {
+        if (state.started === 1) send(409, { message: "container is marked for removal and cannot be started" });
+        else send(204);
+      },
+    });
+    try {
+      const client = createDockerClient({ socketPath: mock.socketPath });
+      const out = await ensureDeskContainer("c", client);
+      assert.equal(out.created, true);
+      assert.equal(mock.state.created, 1);
+      assert.equal(mock.state.started, 2);
+    } finally {
+      mock.server.close();
+    }
+  });
+});
