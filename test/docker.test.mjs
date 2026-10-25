@@ -250,7 +250,7 @@ describe("removeDeskContainer", () => {
 function startRemovalMock(script) {
   const dir = mkdtempSync(join(tmpdir(), "gpc-dock-rm-"));
   const socketPath = join(dir, "docker.sock");
-  const state = { created: 0, started: 0, deskInspects: 0 };
+    const state = { created: 0, started: 0, deskInspects: 0 };
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://docker.local");
     const path = url.pathname.replace(/^\/v1\.\d+/, "");
@@ -263,6 +263,10 @@ function startRemovalMock(script) {
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
     };
+    if (req.method === "GET" && path === "/version") {
+      send(200, { ApiVersion: "1.48", MinAPIVersion: "1.44", Version: "28.0.0" });
+      return;
+    }
     if (req.method === "GET" && path === "/containers/gpt-pro-cloud-a/json") {
       send(200, TEMPLATE);
       return;
