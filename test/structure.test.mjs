@@ -124,7 +124,10 @@ describe("standalone product", () => {
     assert.match(gw, /withDeskCdp/);
     assert.match(gw, /ONBOARD_YIELD_MS/);
     assert.match(gw, /deskCdpOn/);
-    assert.match(gw, /applyDeskCdpLive/);
+    assert.doesNotMatch(
+      gw.slice(gw.indexOf("async function ensureExclusiveFilePipe"), gw.indexOf("async function watchExclusiveFileChooser")),
+      /applyDeskCdpLive|kill_chromium|\/cdp|\/proxy/,
+    );
     assert.match(gw, /setDeskCdp/);
     assert.match(gw, /这个号未开多人分屏/);
     assert.match(gw, /页面协助需要开启调试口/);

@@ -15,10 +15,27 @@ a[href*="kasmweb.com"] {
   display: none !important;
 }
 #noVNC_keyboardinput {
-  width: 2px !important;
-  height: 2px !important;
-  opacity: 0.01 !important;
-  overflow: hidden !important;
+  position: fixed !important;
+  left: 12px;
+  top: 12px;
+  width: 8em !important;
+  min-width: 8em !important;
+  height: 1.6em !important;
+  min-height: 1.6em !important;
+  opacity: 1 !important;
+  overflow: visible !important;
+  z-index: 99999 !important;
+  font-size: 16px !important;
+  line-height: 1.4 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  resize: none !important;
+  border: 0 !important;
+  color: transparent !important;
+  caret-color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  background: transparent !important;
+  pointer-events: none !important;
 }'
 
 inject() {
