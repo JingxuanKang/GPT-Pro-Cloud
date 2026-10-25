@@ -13,7 +13,7 @@ import { createSocketHub, kickLiveSession } from "../lib/kick.mjs";
 import { evaluateInDesk, waitForDesk, peekClipboard, isShareUrl, SHARE_CLICK, TAB_CLIP_READ, READ_PROJECT_URL, projectOnboardScript, listSeatProjectLinks, sleep } from "../lib/chrome.mjs";
 import { applyDeskProxyLive, applyDeskProxiesLive } from "../lib/proxy.mjs";
 import { createSeatRegistry, parseTabSeatCap, publicSeat } from "../lib/seats.mjs";
-import { applyDeskCdpLive, attachSeatTarget, closeTarget, createParkedChatGPTTab, deskBrowserWs, deskBrowsers, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, targetExists } from "../lib/cdp.mjs";
+import { attachSeatTarget, closeTarget, createParkedChatGPTTab, deskBrowserWs, deskBrowsers, evaluateOnTarget, forgetDeskBrowser, listDeskTargets, targetExists } from "../lib/cdp.mjs";
 import { createSeatJailRegistry, navigateSeatToUrl, pickNamedProjectHref, projectUrlFromOnboard, seatStartUrl } from "../lib/project-jail.mjs";
 import { startSeatScreencast } from "../lib/screencast.mjs";
 import { applyTabPastePlan, tabPastePlan } from "../lib/tab-paste.mjs";
@@ -64,7 +64,7 @@ const imePipes = new Map();
 const FILE_BODY_MAX = 16 * 1024 * 1024;
 /** Yield so a second /open can create a tab before assist grabs the debugger. */
 const ONBOARD_YIELD_MS = 1500;
-const FILE_PIPE_WAIT_MS = 15_000;
+const FILE_PIPE_ATTEMPTS = 3;
 
 async function withDeskCdp(id, fn) {
   const prev = deskCdpLocks.get(id) || Promise.resolve();
@@ -215,25 +215,16 @@ async function findChatGptTargetId(deskId) {
 }
 
 async function ensureExclusiveFilePipe(deskId) {
-  try {
-    await deskBrowserWs(deskId);
-    return true;
-  } catch {
-    /* old desktop images start Chromium without a debugger until .gpc-cdp=1 */
-  }
-  try {
-    await applyDeskCdpLive(deskId, true);
-  } catch {
-    return false;
-  }
-  const t0 = Date.now();
-  while (Date.now() - t0 < FILE_PIPE_WAIT_MS) {
+  // Debug port and the download directory are created when the desk starts.
+  // Attaching the file pipe only waits for that port. It must not restart Chromium.
+  for (let attempt = 0; attempt < FILE_PIPE_ATTEMPTS; attempt++) {
     try {
       await deskBrowserWs(deskId);
       return true;
     } catch {
-      await sleep(400);
+      /* pipe is not up yet; the browser that is already running stays up */
     }
+    if (attempt + 1 < FILE_PIPE_ATTEMPTS) await sleep(200);
   }
   return false;
 }
@@ -410,8 +401,17 @@ proxy.on("proxyRes", (proxyRes) => {
   delete proxyRes.headers["cross-origin-opener-policy"];
   delete proxyRes.headers["cross-origin-resource-policy"];
 });
-proxy.on("error", (err, _req, res) => {
+proxy.on("error", (err, req, res) => {
   console.error("proxy error:", err.message);
+  const code = `${err?.code || ""} ${err?.message || ""}`;
+  if (/EAI_AGAIN|ENOTFOUND|ECONNREFUSED|EHOSTUNREACH/.test(code)) {
+    const deskId = parseCookie(req?.headers?.cookie || "")[DESK];
+    if (deskId && registry.has(deskId)) {
+      ensureDeskContainer(deskId, docker, { enableCdp: users.deskCdpOn(deskId) }).catch((e) => {
+        console.error(`desk ${deskId}: ${e.message}`);
+      });
+    }
+  }
   if (res && !res.headersSent && typeof res.writeHead === "function") {
     res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
     res.end("暂时无法连接");
@@ -687,6 +687,11 @@ async function handleApi(req, res, url, sess) {
   if (open && req.method === "POST") {
     const id = open[1];
     if (!users.canOpen(sess.user, id) || !registry.has(id)) return json(res, 403, { error: "没有访问权限" });
+    try {
+      await ensureDeskContainer(id, docker, { enableCdp: users.deskCdpOn(id) });
+    } catch (e) {
+      console.error(`desk ${id}: ${e.message}`);
+    }
     const cdp = users.deskCdpOn(id);
     const extraOccupants = presence.list(id).map((v) => ({ userId: v.id }));
     let decision;

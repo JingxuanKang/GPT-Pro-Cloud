@@ -211,4 +211,27 @@ describe("issue 26 wiring", () => {
     assert.match(init, /gpc-downloads/);
     assert.match(init, /DownloadDirectory/);
   });
+
+  it("does not relaunch Chromium when IME is submitted or the download menu opens", () => {
+    const gw = readFileSync(resolve(root, "gateway/server.mjs"), "utf8");
+    const autostart = readFileSync(resolve(root, "docker/autostart"), "utf8");
+    const init = readFileSync(resolve(root, "docker/update-autostart.sh"), "utf8");
+    const pipe = gw.slice(gw.indexOf("async function ensureExclusiveFilePipe"), gw.indexOf("async function watchExclusiveFileChooser"));
+    const ime = gw.slice(gw.indexOf("async function imeSender"), gw.indexOf("async function applyDeskIme"));
+    const downloads = gw.slice(gw.indexOf("async function ensureDeskDownloads"), gw.indexOf("async function readFileUploadBody"));
+    const menu = gw.slice(gw.indexOf("/downloads$/"), gw.indexOf("const chooserApi"));
+    assert.doesNotMatch(pipe, /applyDeskCdpLive|kill_chromium|18790\/cdp|18790\/proxy/);
+    assert.doesNotMatch(ime, /applyDeskCdpLive|kill_chromium|18790\/cdp|18790\/proxy/);
+    assert.doesNotMatch(downloads, /applyDeskCdpLive|kill_chromium|18790\/cdp|18790\/proxy/);
+    assert.match(menu, /ensureDeskDownloads/);
+    assert.doesNotMatch(menu, /applyDeskCdpLive|kill_chromium/);
+    assert.match(autostart, /remote-debugging-port=9222/);
+    assert.match(init, /mkdir -p \/etc\/chromium\/policies\/managed \/config\/gpc-downloads/);
+    const openStart = gw.indexOf("const open = url.pathname.match(/^\\/api\\/desks\\/([a-z0-9-]+)\\/open$/)");
+    const openBlock = gw.slice(openStart, gw.indexOf("const paste = url.pathname.match"));
+    assert.match(openBlock, /ensureDeskContainer/);
+    const proxyErr = gw.slice(gw.indexOf('proxy.on("error"'), gw.indexOf("function parseCookie"));
+    assert.match(proxyErr, /ensureDeskContainer/);
+    assert.match(proxyErr, /EAI_AGAIN/);
+  });
 });
